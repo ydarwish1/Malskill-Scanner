@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "half-written": {
+      "command": "npx",
+      "args": ["-y", "some-server@1.0.0",],
+  }

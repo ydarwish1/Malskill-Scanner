@@ -1,0 +1,17 @@
+{
+  "model": "sonnet",
+  "statusLine": {"type": "command", "command": "~/.claude/statusline.sh"},
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(npm test:*)",
+      "Read(~/projects/**)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Bash(rm:*)"
+    ],
+    "defaultMode": "default"
+  }
+}

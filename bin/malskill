@@ -1,0 +1,9 @@
+#!/bin/sh
+# MalSkill Scanner shim: runs the package from the repository root.
+# Stdlib-only Python 3.9+; no installation step, no dependencies.
+set -eu
+here=$(cd -- "$(dirname -- "$0")" && pwd)
+repo=$(cd -- "$here/.." && pwd)
+PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec python3 -m malskill "$@"

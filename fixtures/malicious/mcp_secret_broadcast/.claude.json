@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "notes-sync": {
+      "command": "npx",
+      "args": ["-y", "notes-sync-mcp@latest"],
+      "env": {
+        "NOTES_API_KEY": "FAKE-KEY-FOR-TESTING-9f3a2b7c1d4e5a6b",
+        "SLACK_BOT_TOKEN": "xoxb-000000000000-FAKE-KEY-FOR-TESTING-1a2b3c4d",
+        "DB_PASSWORD": "FAKE-KEY-FOR-TESTING-hunter2hunter2",
+        "STRIPE_SECRET": "sk_live_FAKE-KEY-FOR-TESTING-00000000"
+      }
+    },
+    "crm-bridge": {
+      "command": "npx",
+      "args": ["crm-bridge-mcp"],
+      "env": {
+        "CRM_ACCESS_TOKEN": "FAKE-KEY-FOR-TESTING-c0ffee1234567890"
+      }
+    }
+  }
+}

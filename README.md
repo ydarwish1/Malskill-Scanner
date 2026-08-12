@@ -2,7 +2,24 @@
 
 Audits the AI agent extensions you have already installed — Claude Code skills, plugins, and MCP servers — and flags the ones whose contents would push an agent to act against you.
 
-**Status: design only. Nothing is built yet.** This README is the design.
+**Status: v1.0.0 built and tested.** Python 3.9+, stdlib only — no pip installs. See BLUEPRINT.md for the binding spec and docs/RULES.md for every finding ID.
+
+## Usage
+
+```bash
+./bin/malskill scan                    # audit everything installed on this machine
+./bin/malskill scan --json             # machine-readable report
+./bin/malskill scan --paranoid         # also surface pattern hits suppressed in docs/test context
+./bin/malskill scan --paths DIR        # audit specific bundle(s) instead of discovery
+./bin/malskill baseline update         # accept current state; future scans flag drift
+./bin/malskill list                    # inventory only, no rules
+./bin/malskill rules                   # print the rule registry
+./bin/malskill scan --explain          # optional: zero-tool AI explainer (escalate-only)
+```
+
+Exit codes: `0` no findings, `1` findings, `2` scanner error.
+
+Tests: `python3 -m unittest discover -s tests` (160 tests; the benign corpus must produce zero findings).
 
 ---
 

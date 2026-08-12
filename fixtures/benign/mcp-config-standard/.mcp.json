@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "project-docs": {
+      "command": "uvx",
+      "args": ["docs-mcp==2.0.1", "--root", "./docs"],
+      "env": {"DOCS_FORMAT": "markdown"}
+    }
+  }
+}

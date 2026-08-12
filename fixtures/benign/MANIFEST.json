@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "kind": "benign",
+  "bar": "Scanning this corpus must yield zero findings. See README.md, 'The bar'.",
+  "fixtures": [
+    {
+      "name": "api-weather-fetch",
+      "mode": "paths",
+      "trap": "Uses an HTTP client and declares that use in the frontmatter description and allowed-tools. Network primitives alone are never a finding."
+    },
+    {
+      "name": "ssh-key-manager",
+      "mode": "paths",
+      "trap": "Touches the SSH configuration directory, and key management is its declared purpose, so the credential-path rule is suppressed. No egress primitive is present."
+    },
+    {
+      "name": "security-review-docs",
+      "mode": "paths",
+      "trap": "Its prose quotes attacker phrasings while teaching reviewers to spot them. Metadata rules must be restricted to description and tool-metadata fields, not README prose."
+    },
+    {
+      "name": "static-site-deploy",
+      "mode": "paths",
+      "trap": "Recursive removal scoped to a scratch directory the script created under TMPDIR. Scoped cleanup is not a destructive command."
+    },
+    {
+      "name": "localhost-metrics",
+      "mode": "paths",
+      "trap": "Claims to run locally and does contact an HTTP endpoint, but only on the loopback interface, which the mismatch rule exempts."
+    },
+    {
+      "name": "markdown-table-formatter",
+      "mode": "paths",
+      "trap": "Baseline ordinary formatting skill. Any finding here means the engine is broken."
+    },
+    {
+      "name": "mcp-config-standard",
+      "mode": "home",
+      "trap": "Package-manager launches of named, version-pinned MCP servers are the ecosystem norm and must not fire the MCP runtime rule. No credential values in any env block."
+    },
+    {
+      "name": "hook-local-formatter",
+      "mode": "home",
+      "trap": "A hook that shells out to a local formatter. Hook strings get the full byte-rule pass but contain no egress primitive."
+    },
+    {
+      "name": "settings-with-permissions",
+      "mode": "home",
+      "trap": "A user's own settings file legitimately contains a permission allow-list. The auto-approve rule targets bundle content that writes one, not a settings file that has one."
+    },
+    {
+      "name": "plugin-home",
+      "mode": "home",
+      "trap": "An installed marketplace plugin with a skill, a command and a local hook. Plugin discovery must not itself generate findings."
+    },
+    {
+      "name": "home-user-skills",
+      "mode": "home",
+      "trap": "User-level skills, commands and agents with entirely ordinary content."
+    },
+    {
+      "name": "docs-install-oneliner",
+      "mode": "paths",
+      "trap": "README, CHANGELOG, CONTRIBUTING and docs/DESIGN.md quote the official curl|bash and Homebrew installer one-liners, a self-install cp into ~/.claude/skills, a symlink into .claude/skills and the --dangerously-skip-permissions flag. Documentation is not an execution surface: behaviour rules fire only from EXECUTABLE and INSTRUCTION files."
+    },
+    {
+      "name": "test-suite-injection-strings",
+      "mode": "paths",
+      "trap": "Injection-hardening tests whose fixtures are literal 'rm -rf /', 'curl | bash', base64-to-shell and settings-redirect payloads, in both test/ and tests/ and in both *.test.ts and test_*.py spellings. Test material is not behaviour."
+    },
+    {
+      "name": "localhost-only-diagram",
+      "mode": "paths",
+      "trap": "Claims to work offline and does contact HTTP endpoints, but only loopback ones written WITHOUT a URL scheme ('curl localhost:3000', '127.0.0.1:8787/health', '[::1]:8787'). The blueprint's localhost exemption has to survive the spelling everybody actually uses."
+    }
+  ]
+}

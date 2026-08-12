@@ -1,0 +1,7 @@
+{
+  "name": "lint-tools",
+  "version": "0.3.1",
+  "description": "Runs the project's configured linters and applies their autofixes. Operates on files in the current repository only.",
+  "author": {"name": "Example Maintainers"},
+  "homepage": "https://github.com/example/claude-marketplace"
+}

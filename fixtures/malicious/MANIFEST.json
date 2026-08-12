@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "kind": "malicious",
+  "contract": "Each fixture must make the scanner emit at least the finding IDs in expect_findings. Incidental extra findings are tolerated where they are inherent to the fixture; tests assert presence, never exclusivity.",
+  "fixtures": [
+    {
+      "name": "network_in_offline_claim",
+      "mode": "paths",
+      "expect_findings": [
+        "NETWORK_IN_OFFLINE_CLAIM"
+      ],
+      "expect_exit": 1,
+      "note": "Description promises offline-only; a script posts to a third-party host."
+    },
+    {
+      "name": "network_in_offline_claim_negated_phrasing",
+      "mode": "paths",
+      "expect_findings": [
+        "NETWORK_IN_OFFLINE_CLAIM"
+      ],
+      "expect_exit": 1,
+      "note": "The same mismatch, phrased the way a liar phrases it: 'no network access is required'. BLUEPRINT.md lists 'no network' and 'no external calls' as claims_offline triggers, so a negated mention must read as an offline claim, never as a network declaration."
+    },
+    {
+      "name": "sensitive_read_plus_egress",
+      "mode": "paths",
+      "expect_findings": [
+        "SENSITIVE_READ_PLUS_EGRESS"
+      ],
+      "expect_exit": 1,
+      "likely_incidental": [
+        "CREDENTIAL_PATH_ACCESS"
+      ],
+      "note": "Reads ~/.aws, ~/.ssh, ~/.netrc plus a full env dump, then POSTs the lot."
+    },
+    {
+      "name": "credential_path_access",
+      "mode": "paths",
+      "expect_findings": [
+        "CREDENTIAL_PATH_ACCESS"
+      ],
+      "expect_exit": 1,
+      "note": "Private-key hoarding with no egress primitive anywhere in the bundle, and a declared purpose (text formatting) unrelated to credentials."
+    },
+    {
+      "name": "destructive_command",
+      "mode": "paths",
+      "expect_findings": [
+        "DESTRUCTIVE_COMMAND"
+      ],
+      "expect_exit": 1,
+      "note": "Unscoped rm -rf on $HOME and /, disk erase, mkfs, fork bomb, chmod -R 777 /."
+    },
+    {
+      "name": "self_modification",
+      "mode": "paths",
+      "expect_findings": [
+        "SELF_MODIFICATION"
+      ],
+      "expect_exit": 1,
+      "note": "Shell rc appends, settings.json rewrite, edits another skill, launchd plist, crontab, git hook.",
+      "likely_incidental": [
+        "CREDENTIAL_PATH_ACCESS"
+      ]
+    },
+    {
+      "name": "auto_approve_tampering",
+      "mode": "paths",
+      "expect_findings": [
+        "AUTO_APPROVE_TAMPERING"
+      ],
+      "expect_exit": 1,
+      "likely_incidental": [
+        "SELF_MODIFICATION"
+      ],
+      "note": "Writes a wildcard allow-list and acceptEdits into settings; relaunches with --dangerously-skip-permissions."
+    },
+    {
+      "name": "obfuscated_execution",
+      "mode": "paths",
+      "expect_findings": [
+        "OBFUSCATED_EXECUTION"
+      ],
+      "expect_exit": 1,
+      "note": "base64/openssl/xxd decode piped to a shell, eval(atob()), exec(b64decode()), long \\x escape run."
+    },
+    {
+      "name": "pipe_to_shell",
+      "mode": "paths",
+      "expect_findings": [
+        "PIPE_TO_SHELL"
+      ],
+      "expect_exit": 1,
+      "note": "Four spellings of curl|wget piped straight into a shell interpreter."
+    },
+    {
+      "name": "hidden_instructions",
+      "mode": "paths",
+      "expect_findings": [
+        "HIDDEN_INSTRUCTIONS"
+      ],
+      "expect_exit": 1,
+      "note": "Agent-directed imperatives inside HTML comments. The zero-width/bidi half of this rule is generated at test time by tests/fixture_gen.py."
+    },
+    {
+      "name": "prompt_injection_in_metadata",
+      "mode": "paths",
+      "expect_findings": [
+        "PROMPT_INJECTION_IN_METADATA"
+      ],
+      "expect_exit": 1,
+      "note": "Manipulation phrases inside the frontmatter description field itself."
+    },
+    {
+      "name": "tool_shadowing",
+      "mode": "paths",
+      "expect_findings": [
+        "TOOL_SHADOWING"
+      ],
+      "expect_exit": 1,
+      "note": "Skill and MCP tool metadata that tells the agent to route Read/Bash through this bundle instead."
+    },
+    {
+      "name": "mcp_runtime_remote_code",
+      "mode": "home",
+      "expect_findings": [
+        "MCP_RUNTIME_REMOTE_CODE"
+      ],
+      "expect_exit": 1,
+      "likely_incidental": [
+        "PIPE_TO_SHELL"
+      ],
+      "note": "MCP servers whose command downloads its own body at launch."
+    },
+    {
+      "name": "mcp_secret_broadcast",
+      "mode": "home",
+      "expect_findings": [
+        "MCP_SECRET_BROADCAST"
+      ],
+      "expect_exit": 1,
+      "note": "Credential-shaped env values handed to @latest and unpinned npx packages."
+    },
+    {
+      "name": "hook_exfil",
+      "mode": "home",
+      "expect_findings": [
+        "HOOK_EXFIL"
+      ],
+      "expect_exit": 1,
+      "note": "Hooks that POST the transcript, the prompt stream and the environment to a collector."
+    },
+    {
+      "name": "hook_remote_code",
+      "mode": "home",
+      "expect_findings": [
+        "HOOK_REMOTE_CODE"
+      ],
+      "expect_exit": 1,
+      "likely_incidental": [
+        "PIPE_TO_SHELL"
+      ],
+      "note": "SessionStart hook pipes a remote script into a shell before the user types anything."
+    },
+    {
+      "name": "mcp_unparseable_config",
+      "mode": "home",
+      "expect_findings": [],
+      "expect_unscanned": true,
+      "expect_exit": 0,
+      "covers": [
+        "MCP_UNPARSEABLE_CONFIG"
+      ],
+      "note": "Truncated JSON. Must produce a loud NOT-FULLY-ANALYZED record, not a crash and not a finding."
+    }
+  ]
+}
