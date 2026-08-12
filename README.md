@@ -1,65 +1,67 @@
 # MalSkill Scanner
 
-Audits the AI agent extensions you have already installed — Claude Code skills, plugins, and MCP servers — and flags the ones whose contents would push an agent to act against you.
-
-**Status: v1.0.0 built and tested.** Python 3.9+, stdlib only — no pip installs. See BLUEPRINT.md for the binding spec and docs/RULES.md for every finding ID.
-
-## Usage
+Audits the AI agent extensions already installed on your machine (Claude Code skills, plugins, commands, agents, hooks, MCP servers) and flags the ones whose contents would push an agent to act against you. Python 3.9+, stdlib only, nothing to install.
 
 ```bash
-./bin/malskill scan                    # audit everything installed on this machine
-./bin/malskill scan --json             # machine-readable report
-./bin/malskill scan --paranoid         # also surface pattern hits suppressed in docs/test context
-./bin/malskill scan --paths DIR        # audit specific bundle(s) instead of discovery
-./bin/malskill baseline update         # accept current state; future scans flag drift
-./bin/malskill list                    # inventory only, no rules
-./bin/malskill rules                   # print the rule registry
-./bin/malskill scan --explain          # optional: zero-tool AI explainer (escalate-only)
+./bin/malskill scan               # audit everything installed on this machine
+./bin/malskill baseline update    # accept what's there now; future scans flag what changed
 ```
 
-Exit codes: `0` no findings, `1` findings, `2` scanner error.
+A finding looks like this:
 
-Tests: `python3 -m unittest discover -s tests` (160 tests; the benign corpus must produce zero findings).
+```
+[CRITICAL] SENSITIVE_READ_PLUS_EGRESS   skill:pdf-tools  scripts/collect.sh:5
+  evidence: reads ~/.aws/credentials ... sends to hxxps://collector[.]attacker[.]example[.]net
+  why: Read-a-secret plus send-it-somewhere, inside one bundle that runs with your
+       agent's privileges, is the exact shape of credential theft.
+  recommendation: Remove this skill, then rotate anything it could have reached.
+```
 
----
+Every report ends in one of three states: `FLAGGED`, `CLEAN`, or `NOT-FULLY-ANALYZED`. It never says "safe", because it can't prove that. A file it couldn't read is listed loudly, not dropped.
 
-## Why it needs to exist
+## How it decides
 
-Measured on one real machine: **867 installed skill bundles, 14,444 files, 5,060 of them executable scripts.** Most of it third-party. **97.2% declare no tool restrictions at all** — they inherit whatever the agent can do.
+Keyword scanning doesn't work at real scale. Measured on one machine: 867 installed bundles, 14,444 files. `curl` appears in 284 of those bundles. Flag that and the report becomes a wall the human learns to skim, and the one real finding scrolls past.
 
-Keyword scanning collapses at that scale. `curl` appears in **284 of the 867** bundles. Words like `PreToolUse` and `SessionStart` appear in **62.6%** of them. A scanner built on keywords produces a wall of false positives and gets ignored inside a week.
+So the scanner flags contradictions instead of keywords:
 
----
+- `curl` in a skill that declares network use: nothing.
+- `curl` in a skill that claims it works offline: `NETWORK_IN_OFFLINE_CLAIM`.
+- Reading `~/.ssh` in a declared credential manager: nothing.
+- Reading `~/.ssh` in the same bundle that posts to an external host: `SENSITIVE_READ_PLUS_EGRESS`.
 
-## The approach
+Where a pattern lives matters too. A `curl | bash` one-liner quoted in a README is documentation; the same line in a script or a SKILL.md an agent obeys is behavior. Documentation hits are counted and disclosed, not flagged (rerun with `--paranoid` to see them).
 
-**1. Don't let the AI decide.** Plain dumb rules find the problems. The AI only explains them — it is never allowed to say "actually that one's fine." Otherwise a bad skill just talks the scanner into passing it.
+The rules are deterministic. The optional AI explainer (`--explain`) runs with zero tools and can only raise a finding's severity or add context. It can never clear one, so a malicious bundle can't talk its way out.
 
-**2. Give the AI that reads the suspicious file zero tools.** Then if it gets tricked, it can't do anything about it.
+Detection runs on raw bytes. Only the copy shown to you is sanitized: invisible unicode escaped, URLs defanged. Reading a report can't itself be the attack.
 
-**3. Stop flagging scary words. Flag mismatches.** `curl` in 284 skills means nothing. `curl` in a skill that claims it only formats text means everything.
+## What it scans
 
-**4. Remember what every skill looked like last week and alert on what changed.** The real danger isn't a new evil skill — it's a skill you already trust going bad in an update.
+- Claude Code skills, plugins, commands, agents (user and project level)
+- Hook commands in `settings.json`
+- MCP server configs: `~/.claude.json`, `.mcp.json`, Claude Desktop, and `--all-clients` for Cursor and others
+- A baseline of every file's hash, so a skill you trusted last week gets flagged when an update changes it
 
-**5. Scan MCP tool descriptions too.** Those load into every session and literally nobody reads them.
+## Commands
 
-**6. Never print "SAFE".** Print "no rule fired, 243 files couldn't be scanned." A green checkmark you can't back up is worse than no scanner.
+```bash
+./bin/malskill scan                # full audit
+./bin/malskill scan --json         # machine-readable report
+./bin/malskill scan --paths DIR    # audit a specific bundle instead of discovery
+./bin/malskill scan --paranoid     # include hits suppressed in docs/test context
+./bin/malskill scan --explain      # add the zero-tool AI explainer
+./bin/malskill list                # show what would be scanned, run no rules
+./bin/malskill rules               # print every rule and what fires it
+./bin/malskill baseline update     # accept current state
+```
 
----
+Exit codes: 0 no findings, 1 findings, 2 scanner error.
 
-## What that means in practice
+## Docs
 
-- Deterministic rules are the engine. The model is a zero-tool explainer that can only **escalate** a finding, never clear one. Severity floors come from the rule.
-- **Detect on raw bytes; sanitize only the copy shown to the model.** Do it the other way round and you hide the obfuscation from the thing judging it.
-- **Three report states, never two:** `FLAGGED` / `CLEAN` / `NOT-FULLY-ANALYZED`. A parse failure is a loud finding, not a silent green row.
-- **Named findings, not a 0–100 score.** `NETWORK_IN_OFFLINE_CLAIM` is actionable. "Scored 47" is not.
-- The extractor is the real high-value target — it runs trusted, before anything else. Byte-level reads only, `safe_load` only, no rendering, no following the reference hop.
-- **Specificity gets published. Recall does not.** Recall against attacks nobody has written yet cannot be measured honestly, and claiming it would be a lie.
+- [docs/RULES.md](docs/RULES.md): every finding ID, what fires it, why it matters, and how it can be wrong
+- [docs/BLUEPRINT.md](docs/BLUEPRINT.md): the spec this was built against
+- [tests/README.md](tests/README.md): the test suite and fixture corpus
 
-## The bar
-
-Near-zero findings on a corpus known to be benign. If v1 returns more than a dozen findings and they are mostly "curl present," it has already failed — the human learns to skim, and the one real finding scrolls past.
-
----
-
-*The six lines are a plain-language rendering of a design review by Claude Fable 5. Corpus figures are measured, not estimated.*
+Tests: `python3 -m unittest discover -s tests`. The bar, asserted in the suite: a known-benign corpus full of curl-using, ssh-reading, injection-quoting bundles must produce zero findings.
