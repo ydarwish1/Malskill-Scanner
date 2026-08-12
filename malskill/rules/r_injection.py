@@ -383,6 +383,7 @@ def check(target) -> List[Finding]:
     findings: List[Finding] = []
     findings.extend(_invisible_findings(target))
     findings.extend(_html_comment_findings(target))
+    # Both metadata passes share one cached extraction, so the second is nearly free.
     findings.extend(
         _metadata_findings(target, INJECTION_PATTERNS, "PROMPT_INJECTION_IN_METADATA")
     )

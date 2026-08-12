@@ -6,5 +6,5 @@ any AI component may only escalate, never clear, a finding.
 Python 3.9+ standard library only. No third-party dependencies, ever.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __all__ = ["__version__"]

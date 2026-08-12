@@ -306,7 +306,7 @@ class Target:
         self.files = [r for r in self.files if r.synthetic]
         self.loaded = False
         # Drop the per-target matcher caches with the bytes they describe.
-        for attr in ("_egress_cache", "_sensitive_cache"):
+        for attr in ("_egress_cache", "_sensitive_cache", "_malskill_metadata_fields"):
             if hasattr(self, attr):
                 delattr(self, attr)
 

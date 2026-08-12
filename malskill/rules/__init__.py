@@ -766,9 +766,9 @@ _RULES: List[Rule] = [
         ),
         recommendation=(
             "Read the line. If the file is genuinely documentation or test material, "
-            "nothing needs doing. If a SKILL.md tells the agent to follow the steps in "
-            "that document, treat the document as an instruction surface and review it "
-            "by hand \u2014 v1 does not follow the reference hop."
+            "nothing needs doing. If a SKILL.md delegates to that document or imports it "
+            "with @, the scanner follows one same-bundle markdown hop and analyzes the "
+            "reached content as instruction context."
         ),
         false_positives=(
             "By construction, most of these are false positives: that is why they are "

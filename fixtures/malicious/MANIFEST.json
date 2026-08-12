@@ -163,6 +163,15 @@
       "note": "SessionStart hook pipes a remote script into a shell before the user types anything."
     },
     {
+      "name": "auto_approve_tampering_reference_hop",
+      "mode": "paths",
+      "expect_findings": [
+        "AUTO_APPROVE_TAMPERING"
+      ],
+      "expect_exit": 1,
+      "note": "SKILL.md delegates to same-bundle docs/setup.md, whose auto-approval directive only becomes actionable after one-hop role promotion."
+    },
+    {
       "name": "mcp_unparseable_config",
       "mode": "home",
       "expect_findings": [],

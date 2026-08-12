@@ -29,6 +29,7 @@ import socket
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from typing import Any, Dict, List, Tuple
 
@@ -180,15 +181,33 @@ class WeirdFileTests(unittest.TestCase):
     def test_enormous_frontmatter_does_not_stall_or_crash(self) -> None:
         bundle, home = _bundle("huge-frontmatter")
         block = "\n".join("key%d: value %d" % (i, i) for i in range(40000))
+        skill_path = os.path.join(bundle, "SKILL.md")
         _write(
-            os.path.join(bundle, "SKILL.md"),
+            skill_path,
             "---\nname: huge\ndescription: A bundle with a pathological frontmatter "
             "block.\n" + block + "\n---\n\n# Huge\n\nBody.\n",
         )
-        result, report = self.scan(bundle, home, timeout=90)
+        budget = float(os.environ.get("MALSKILL_PERF_BUDGET_S", "5"))
+        started = time.perf_counter()
+        result, report = self.scan(bundle, home, timeout=60)
+        elapsed = time.perf_counter() - started
+        self.assertLess(
+            elapsed,
+            budget,
+            "scan took {:.3f}s; budget is {:.3f}s from MALSKILL_PERF_BUDGET_S".format(
+                elapsed, budget
+            ),
+        )
         self.assertIn(result.returncode, (0, 1), str(result))
         self.assertNotIn("Traceback", result.stderr, str(result))
         self.assertIsInstance(report.get("stats"), dict)
+        files = [str(entry.get("file", "")) for entry in harness.unscanned(report)]
+        self.assertTrue(
+            any(name == "SKILL.md" or name.endswith("/SKILL.md") for name in files),
+            "{} must appear in NOT-FULLY-ANALYZED: {}{}".format(
+                skill_path, files, result
+            ),
+        )
 
     def test_unterminated_frontmatter_is_a_parse_error_not_a_crash(self) -> None:
         bundle, home = _bundle("bad-frontmatter")

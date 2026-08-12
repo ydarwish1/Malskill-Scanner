@@ -37,11 +37,11 @@ printing "SAFE". They are collected as :class:`SuppressedHit` records, counted i
 report note, and listed individually as ``SUPPRESSED_PATTERN_HIT`` (LOW) findings under
 ``--paranoid``.
 
-Residual risk, stated plainly: an attacker can put the payload in ``README.md`` and have
-``SKILL.md`` say "follow the steps in README.md". The scanner does not follow that
-reference hop — README.md, "no following the reference hop" — so the payload lands in the
-suppressed bucket rather than in FLAGGED. ``--paranoid`` exists for the reader who wants
-to close that gap by hand. See docs/RULES.md, "Roles and the reference hop".
+Explicit delegation closes the common reference-hop bypass without resolving anything on
+the filesystem. One level of same-bundle markdown references from an original INSTRUCTION
+record is looked up among the records already loaded for the target, then promoted to
+INSTRUCTION. Bare links, TEST files, outside-bundle paths and unrecognised delegation prose
+remain residual gaps. See docs/RULES.md, "Roles and the reference hop".
 
 This module imports nothing from the rest of the package, so it can never take part in an
 import cycle and can be reasoned about on its own.
@@ -51,15 +51,20 @@ from __future__ import annotations
 
 import enum
 import os
+import posixpath
 import re
 import stat
 from dataclasses import dataclass
-from typing import Any, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 __all__ = [
     "FileRole",
     "ACTIONABLE_ROLES",
     "SuppressedHit",
+    "MAX_HOP_REFS_PER_FILE",
+    "MAX_HOP_PROMOTIONS_PER_TARGET",
+    "MAX_HOP_BYTES_PER_TARGET",
+    "HOP_SUFFIXES",
     "classify",
     "assign",
     "role_of",
@@ -199,6 +204,44 @@ _TEST_FILE_RE = re.compile(
 )
 
 _EXEC_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+
+#: References followed per instruction file. Beyond this, the rest are recorded, not followed.
+MAX_HOP_REFS_PER_FILE = 5
+#: Records promoted per target, across all instruction files.
+MAX_HOP_PROMOTIONS_PER_TARGET = 20
+#: Total bytes of promoted content per target.
+MAX_HOP_BYTES_PER_TARGET = 256 * 1024
+#: Extensions a reference may point at. Markdown only — an instruction file delegating to a
+#: script is already covered by the executable rules.
+HOP_SUFFIXES = (".md", ".markdown")
+
+#: The false-positive gate: a path is followed only when its line delegates authority.
+#: Pointer-only prose such as "see the guide", ``consult`` or bare ``read`` is
+#: deliberately excluded. Directly negated ``not execute`` is a disclaimer, not a cue.
+_DELEGATION_RE = re.compile(
+    r"(?:"
+    r"\b(?:follow|following|perform|apply)\b|(?<!not )\bexecute\b|"
+    r"\b(?:steps|instructions)\s+in\b|\bbefore\s+starting\b|\bbegin\s+by\b|"
+    r"\bstart\s+by\b|\bfirst\s+run\b|\brun\s+the\b|\bcarry\s+out\b|"
+    r"\bas\s+described\s+in\b|\bas\s+specified\s+in\b|"
+    r"\bread\s+and\s+follow\b"
+    r")",
+    re.I,
+)
+_MARKDOWN_INLINE_RE = re.compile(r"\]\(([^)]+)\)")
+_MARKDOWN_DEFINITION_RE = re.compile(r"^\s*\[([^\]]+)\]:\s*(\S.*)$")
+_MARKDOWN_REFERENCE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]+)\]")
+_MARKDOWN_SHORTCUT_RE = re.compile(r"(?<!!)(?<!\])\[([^\]]+)\](?!\[)(?!\()")
+_BACKTICK_PATH_RE = re.compile(r"(?<!`)`([^`]+)`(?!`)")
+_AT_IMPORT_RE = re.compile(
+    r"(?<![A-Za-z0-9])@([^\s<>`\[\]()]+\.(?:md|markdown))\b",
+    re.I,
+)
+_BARE_TOKEN_RE = re.compile(r"\S+")
+_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_BARE_TRAILING_PUNCTUATION = ".,;:)]\"'"
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_C0_CONTROL_RE = re.compile(r"[\x00-\x1f]")
 
 
 # ---------------------------------------------------------------------------------------
@@ -356,8 +399,238 @@ def _instruction_dir(dirs: List[str]) -> bool:
     return False
 
 
+def _reference_label(raw: str) -> str:
+    """Normalise a Markdown reference label for same-document lookup."""
+    return " ".join(raw.split()).casefold()
+
+
+def _bare_hop_token(raw: str) -> Optional[str]:
+    """Return a bare relative markdown path token, without sentence punctuation."""
+    candidate = raw.rstrip(_BARE_TRAILING_PUNCTUATION)
+    if (
+        not candidate
+        or candidate.startswith("@")
+        or _URI_SCHEME_RE.match(candidate)
+        or any(character in candidate for character in "`<>[](")
+        or posixpath.splitext(candidate)[1].lower() not in HOP_SUFFIXES
+    ):
+        return None
+    return candidate
+
+
+def _hop_candidates(text: str) -> List[Tuple[str, str]]:
+    """Return reference candidates in document order as ``(path, provenance)`` pairs."""
+    lines = text.splitlines()
+    definitions: Dict[str, str] = {}
+    definition_lines = set()
+    for index, line in enumerate(lines):
+        definition = _MARKDOWN_DEFINITION_RE.search(line)
+        if definition is None:
+            continue
+        definitions[_reference_label(definition.group(1))] = definition.group(2)
+        definition_lines.add(index)
+
+    candidates: List[Tuple[str, str]] = []
+    for index, line in enumerate(lines):
+        line_candidates: List[Tuple[int, str, str]] = []
+        for match in _AT_IMPORT_RE.finditer(line):
+            line_candidates.append((match.start(), match.group(1), "@import"))
+
+        if _DELEGATION_RE.search(line) and index not in definition_lines:
+            for match in _MARKDOWN_INLINE_RE.finditer(line):
+                line_candidates.append((match.start(), match.group(1), "delegation"))
+            reference_spans = []
+            for match in _MARKDOWN_REFERENCE_RE.finditer(line):
+                reference_spans.append(match.span())
+                label = _reference_label(match.group(2) or match.group(1))
+                target = definitions.get(label)
+                if target is not None:
+                    line_candidates.append((match.start(), target, "delegation"))
+            for match in _MARKDOWN_SHORTCUT_RE.finditer(line):
+                if any(
+                    start <= match.start() and match.end() <= end
+                    for start, end in reference_spans
+                ):
+                    continue
+                target = definitions.get(_reference_label(match.group(1)))
+                if target is not None:
+                    line_candidates.append((match.start(), target, "delegation"))
+            for match in _BACKTICK_PATH_RE.finditer(line):
+                line_candidates.append((match.start(), match.group(1), "delegation"))
+            for match in _BARE_TOKEN_RE.finditer(line):
+                bare = _bare_hop_token(match.group(0))
+                if bare is not None:
+                    line_candidates.append((match.start(), bare, "delegation"))
+
+        line_candidates.sort(key=lambda item: item[0])
+        candidates.extend((path, via) for _, path, via in line_candidates)
+    return candidates
+
+
+def _normalize_hop_reference(raw: str) -> Optional[str]:
+    """Validate and normalise one candidate without touching the filesystem."""
+    if not raw or len(raw) > 200 or _C0_CONTROL_RE.search(raw):
+        return None
+
+    candidate = raw.strip()
+    if candidate.startswith("<") and candidate.endswith(">"):
+        candidate = candidate[1:-1].strip()
+    if not candidate or len(candidate) > 200:
+        return None
+
+    lower = candidate.lower()
+    if (
+        "://" in candidate
+        or lower.startswith(("mailto:", "data:", "javascript:"))
+        or candidate.startswith("#")
+        or candidate.startswith(("/", "~", "\\"))
+        or _WINDOWS_DRIVE_RE.match(candidate)
+    ):
+        return None
+
+    anchor = candidate.find("#")
+    query = candidate.find("?")
+    cut_positions = [position for position in (anchor, query) if position >= 0]
+    if cut_positions:
+        candidate = candidate[: min(cut_positions)].strip()
+    if not candidate:
+        return None
+    if ".." in candidate.split("/"):
+        return None
+    normalized = posixpath.normpath(candidate)
+    if normalized.startswith("..") or ".." in normalized.split("/"):
+        return None
+    if posixpath.splitext(normalized)[1].lower() not in HOP_SUFFIXES:
+        return None
+    return normalized
+
+
+def _promote_reference_hops(target: Any) -> None:
+    """Promote one bounded level of delegated markdown already loaded in *target*."""
+    records = list(getattr(target, "files", []) or [])
+    meta = getattr(target, "meta", None)
+    if not isinstance(meta, dict):
+        meta = {}
+        target.meta = meta
+    meta["reference_hops"] = []
+    meta.pop("reference_hops_capped", None)
+
+    # Snapshot before promotion: a referenced document must not become a second referrer.
+    referring_records = [record for record in records if role_of(record) == FileRole.INSTRUCTION]
+    by_rel: Dict[str, Optional[Any]] = {}
+    for record in records:
+        # os.path.relpath uses native separators; hop references are normalised as POSIX.
+        rel = (getattr(record, "rel", "") or "").replace("\\", "/")
+        if not rel:
+            continue
+        if rel in by_rel:
+            # Exact duplicate rel paths are ambiguous, so resolve neither one.
+            by_rel[rel] = None
+        else:
+            by_rel[rel] = record
+
+    references_seen = 0
+    references_followed = 0
+    promotions = 0
+    promoted_bytes = 0
+    promoted_ids = set()
+    per_file_caps: List[str] = []
+    promotion_cap_hit = False
+    byte_cap_hit = False
+
+    for referring in referring_records:
+        if (
+            getattr(referring, "is_binary", False)
+            or getattr(referring, "synthetic", False)
+            or not getattr(referring, "has_content", False)
+        ):
+            continue
+
+        candidates = _hop_candidates(getattr(referring, "text", "") or "")
+        file_seen = len(candidates)
+        references_seen += file_seen
+        file_followed = 0
+        file_capped = False
+        referring_rel = getattr(referring, "rel", "") or ""
+        # Keep lookup relative paths POSIX-shaped even when records came from Windows.
+        referring_lookup_rel = referring_rel.replace("\\", "/")
+        referring_dir = posixpath.dirname(referring_lookup_rel)
+
+        for raw, via in candidates:
+            candidate = _normalize_hop_reference(raw)
+            if candidate is None:
+                continue
+            if file_followed >= MAX_HOP_REFS_PER_FILE:
+                file_capped = True
+                continue
+
+            file_followed += 1
+            references_followed += 1
+            resolved = posixpath.normpath(posixpath.join(referring_dir, candidate))
+            if resolved.startswith("..") or ".." in resolved.split("/"):
+                continue
+
+            matched = by_rel.get(resolved)
+            if matched is None or matched is referring:
+                continue
+            matched_id = id(matched)
+            if matched_id in promoted_ids:
+                continue
+            if role_of(matched) not in (FileRole.DOCS, FileRole.DATA):
+                continue
+            if getattr(matched, "is_binary", False) or not getattr(
+                matched, "has_content", False
+            ):
+                continue
+
+            content_bytes = len(getattr(matched, "data", b"") or b"")
+            if promotions >= MAX_HOP_PROMOTIONS_PER_TARGET:
+                promotion_cap_hit = True
+                continue
+            if promoted_bytes + content_bytes > MAX_HOP_BYTES_PER_TARGET:
+                byte_cap_hit = True
+                continue
+
+            matched.role = FileRole.INSTRUCTION
+            promoted_ids.add(matched_id)
+            promotions += 1
+            promoted_bytes += content_bytes
+            meta["reference_hops"].append(
+                {"from": referring_rel, "to": resolved, "via": via}
+            )
+
+        if file_capped:
+            per_file_caps.append(
+                "%s (%d seen, %d followed)"
+                % (referring_rel, file_seen, file_followed)
+            )
+
+    cap_messages: List[str] = []
+    if per_file_caps:
+        cap_messages.append(
+            "per-file reference cap %d hit: %s"
+            % (MAX_HOP_REFS_PER_FILE, ", ".join(per_file_caps))
+        )
+    if promotion_cap_hit:
+        cap_messages.append(
+            "target promotion cap %d hit"
+            % MAX_HOP_PROMOTIONS_PER_TARGET
+        )
+    if byte_cap_hit:
+        cap_messages.append(
+            "target promoted-byte cap %d hit"
+            % MAX_HOP_BYTES_PER_TARGET
+        )
+    if cap_messages:
+        cap_messages.append(
+            "%d references seen, %d followed, %d records promoted (%d bytes)"
+            % (references_seen, references_followed, promotions, promoted_bytes)
+        )
+        meta["reference_hops_capped"] = "; ".join(cap_messages)
+
+
 def assign(target: Any) -> None:
-    """Classify every loaded record of a target, storing the role on the record."""
+    """Classify every loaded record of a target, then promote one reference hop."""
     kind = getattr(getattr(target, "kind", ""), "value", str(getattr(target, "kind", "")))
     path = getattr(target, "path", "") or ""
     try:
@@ -373,6 +646,7 @@ def assign(target: Any) -> None:
             target_kind=kind,
             single_file_target=single_file,
         )
+    _promote_reference_hops(target)
 
 
 def role_of(record: Any) -> FileRole:

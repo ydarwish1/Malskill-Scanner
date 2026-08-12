@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Pattern, Sequence, Set, Tuple
 
 from malskill.roles import ACTIONABLE_ROLES, FileRole, SuppressedHit, role_of
+from malskill.rules import REASON_TOO_LARGE
 
 __all__ = [
     "Hit",
@@ -102,6 +103,11 @@ def line_at(text: str, index: int) -> Tuple[int, str]:
 #: aborted the whole loop, so the *later* patterns in a table silently stopped running on
 #: exactly the busiest files.
 _MAX_HITS_PER_FILE = 2000
+#: Most frontmatter fields inspected per file. Above this the file is reported as not fully
+#: analyzed rather than partially and silently scanned.
+MAX_METADATA_FIELDS_PER_FILE = 2000
+#: Most metadata bytes inspected per file, same rule.
+MAX_METADATA_BYTES_PER_FILE = 1_000_000
 
 
 def search_text(
@@ -763,14 +769,30 @@ def is_instruction_record(record: Any) -> bool:
     return role_of(record) is FileRole.INSTRUCTION
 
 
-def _line_of_value(text: str, value: str) -> Optional[int]:
-    probe = value.strip().split("\n")[0][:60]
-    if not probe:
-        return None
-    index = text.find(probe)
-    if index == -1:
-        return None
-    return line_at(text, index)[0]
+def _top_level_key(key_path: str) -> str:
+    return key_path.split(".", 1)[0].split("[", 1)[0]
+
+
+def _line_of_field(parsed: Any, key_path: str) -> Optional[int]:
+    prefix = key_path
+    while prefix:
+        line = parsed.key_lines.get(prefix)
+        if line is not None:
+            return line
+        if prefix.endswith("]") and "[" in prefix:
+            prefix = prefix.rsplit("[", 1)[0]
+        elif "." in prefix:
+            prefix = prefix.rsplit(".", 1)[0]
+        else:
+            break
+
+    top_level = _top_level_key(key_path)
+    line = parsed.key_lines.get(top_level)
+    if line is not None:
+        return line
+    if parsed.start_line:
+        return parsed.start_line
+    return None
 
 
 def iter_metadata_fields(target: Any) -> List[MetaField]:
@@ -780,6 +802,13 @@ def iter_metadata_fields(target: Any) -> List[MetaField]:
     injection (this repository, for instance) must not fire the injection rules; only
     fields loaded into the model's context as authority are inspected.
     """
+    try:
+        cached = getattr(target, "_malskill_metadata_fields", None)
+    except (AttributeError, TypeError):
+        cached = None
+    if cached is not None:
+        return cached
+
     from malskill import frontmatter as fm
 
     fields: List[MetaField] = []
@@ -835,8 +864,18 @@ def iter_metadata_fields(target: Any) -> List[MetaField]:
         parsed = fm.parse(record.text)
         if not parsed.present or not parsed.ok:
             continue
+        observed_fields = 0
+        observed_bytes = 0
+        capped = False
         for key_path, value in fm.iter_string_values(parsed.data):
-            if not value.strip():
+            observed_fields += 1
+            observed_bytes += len(value.encode("utf-8"))
+            if (
+                observed_fields > MAX_METADATA_FIELDS_PER_FILE
+                or observed_bytes > MAX_METADATA_BYTES_PER_FILE
+            ):
+                capped = True
+            if capped or not value.strip():
                 continue
             fields.append(
                 MetaField(
@@ -844,10 +883,43 @@ def iter_metadata_fields(target: Any) -> List[MetaField]:
                     text=value,
                     file_rel=record.rel,
                     file_path=record.path,
-                    line=_line_of_value(record.text, value),
+                    line=_line_of_field(parsed, key_path),
                     record=record,
                 )
             )
+        field_cap_hit = observed_fields > MAX_METADATA_FIELDS_PER_FILE
+        byte_cap_hit = observed_bytes > MAX_METADATA_BYTES_PER_FILE
+        if (field_cap_hit or byte_cap_hit) and getattr(record, "reason", None) is None:
+            record.reason = REASON_TOO_LARGE
+            if field_cap_hit and byte_cap_hit:
+                record.detail = (
+                    "frontmatter metadata capped at %d fields and %d bytes "
+                    "(file has %d fields and %d metadata bytes); not fully analyzed"
+                    % (
+                        MAX_METADATA_FIELDS_PER_FILE,
+                        MAX_METADATA_BYTES_PER_FILE,
+                        observed_fields,
+                        observed_bytes,
+                    )
+                )
+            elif field_cap_hit:
+                record.detail = (
+                    "frontmatter metadata capped at %d fields (file has %d); "
+                    "not fully analyzed"
+                    % (MAX_METADATA_FIELDS_PER_FILE, observed_fields)
+                )
+            else:
+                record.detail = (
+                    "frontmatter metadata capped at %d bytes "
+                    "(file has %d metadata bytes); not fully analyzed"
+                    % (MAX_METADATA_BYTES_PER_FILE, observed_bytes)
+                )
+
+    # Callers only iterate this shared list and must not mutate it.
+    try:
+        setattr(target, "_malskill_metadata_fields", fields)
+    except (AttributeError, TypeError):
+        pass
     return fields
 
 

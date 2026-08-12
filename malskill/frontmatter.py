@@ -49,6 +49,8 @@ class FrontMatter:
     unparsed: List[str] = field(default_factory=list)
     #: Line number (1-based) where the frontmatter body starts, for finding locations.
     start_line: int = 0
+    #: Absolute 1-based line number in the ORIGINAL document for each parsed key path.
+    key_lines: Dict[str, int] = field(default_factory=dict)
 
     def get(self, key: str, default: Any = None) -> Any:
         """Case-insensitive, dash/underscore-insensitive lookup."""
@@ -127,7 +129,12 @@ def parse(text: str) -> FrontMatter:
 
     block = lines[open_at + 1 : close_at]
     body = "\n".join(lines[close_at + 1 :])
-    data, unparsed, strict = _parse_block(block)
+    data, unparsed, strict, relative_key_lines = _parse_block(block)
+    start_line = open_at + 2
+    key_lines = {
+        key: start_line + relative_line
+        for key, relative_line in relative_key_lines.items()
+    }
     return FrontMatter(
         data=data,
         body=body,
@@ -137,7 +144,8 @@ def parse(text: str) -> FrontMatter:
         raw="\n".join(block),
         strict=strict,
         unparsed=unparsed,
-        start_line=open_at + 2,
+        start_line=start_line,
+        key_lines=key_lines,
     )
 
 
@@ -153,10 +161,13 @@ def _indent_width(text: str) -> int:
     return width
 
 
-def _parse_block(lines: List[str]) -> Tuple[Dict[str, Any], List[str], bool]:
+def _parse_block(
+    lines: List[str],
+) -> Tuple[Dict[str, Any], List[str], bool, Dict[str, int]]:
     data: Dict[str, Any] = {}
     unparsed: List[str] = []
     strict = True
+    key_lines: Dict[str, int] = {}
     i = 0
     n = len(lines)
 
@@ -182,6 +193,7 @@ def _parse_block(lines: List[str]) -> Tuple[Dict[str, Any], List[str], bool]:
         key = match.group("key").strip()
         value = match.group("value")
         block_marker = value.strip()
+        key_lines[key] = i
 
         if block_marker in ("|", ">", "|-", ">-", "|+", ">+", "|2", ">2"):
             collected, i = _collect_indented(lines, i + 1)
@@ -195,9 +207,11 @@ def _parse_block(lines: List[str]) -> Tuple[Dict[str, Any], List[str], bool]:
                 _LIST_ITEM_RE.match(item) for item in collected if item.strip()
             ):
                 items: List[str] = []
-                for item in collected:
+                for j, item in enumerate(collected):
                     m = _LIST_ITEM_RE.match(item)
                     if m:
+                        item_index = len(items)
+                        key_lines["%s[%d]" % (key, item_index)] = i + 1 + j
                         items.append(_scalar(m.group("value")))
                 data[key] = items
                 i = next_i
@@ -207,7 +221,8 @@ def _parse_block(lines: List[str]) -> Tuple[Dict[str, Any], List[str], bool]:
             ):
                 nested: Dict[str, Any] = {}
                 nested_ok = True
-                for item in collected:
+                nested_lines: Dict[str, int] = {}
+                for j, item in enumerate(collected):
                     if not item.strip():
                         continue
                     m = _KEY_RE.match(item)
@@ -218,9 +233,12 @@ def _parse_block(lines: List[str]) -> Tuple[Dict[str, Any], List[str], bool]:
                     if nested_value.strip() == "":
                         nested_ok = False
                         break
-                    nested[m.group("key").strip()] = _scalar(nested_value)
+                    nested_key = m.group("key").strip()
+                    nested[nested_key] = _scalar(nested_value)
+                    nested_lines["%s.%s" % (key, nested_key)] = i + 1 + j
                 if nested_ok and nested:
                     data[key] = nested
+                    key_lines.update(nested_lines)
                     i = next_i
                     continue
                 # Deeper / unsupported structure: keep it as a raw string, never guess.
@@ -242,7 +260,7 @@ def _parse_block(lines: List[str]) -> Tuple[Dict[str, Any], List[str], bool]:
         data[key] = _scalar(value)
         i += 1
 
-    return data, unparsed, strict
+    return data, unparsed, strict, key_lines
 
 
 def _collect_indented(lines: List[str], start: int) -> Tuple[List[str], int]:

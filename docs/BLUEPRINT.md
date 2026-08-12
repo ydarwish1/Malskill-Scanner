@@ -155,6 +155,7 @@ findings, unscanned records, suppressed hits and stats. Exit codes: 0 none, 1 fi
 
 ## Known limit
 
-A payload can sit in a README while a SKILL.md tells the agent to go read it. Version 1
-does not follow that reference hop, so the payload keeps the DOCS role and stays a
-suppressed hit. This is stated in docs/RULES.md rather than papered over.
+An original INSTRUCTION record can delegate one same-bundle markdown hop. The scanner
+matches an already-loaded record and promotes DOCS or DATA to INSTRUCTION without filesystem
+resolution. Bare links, TEST targets, outside-bundle references and delegation prose outside
+the bounded cue list remain suppressed gaps; docs/RULES.md states them plainly.

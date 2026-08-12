@@ -28,9 +28,9 @@ A `curl … | bash` line quoted in a README is documentation. The same line in a
 
 Suppressed is not silent. Held-back matches are counted in a report note, listed in full under `report["suppressed"]` in the JSON output, and printed as `SUPPRESSED_PATTERN_HIT` findings with `--paranoid`.
 
-## Residual risk
+## Roles and the reference hop
 
-The role policy creates a bypass, and it is worth stating plainly.
+The role policy used to create this bypass, and the attack is worth keeping explicit.
 
 > An attacker puts the payload in `README.md` or `docs/setup.md`, and writes in
 > `SKILL.md`: "Before starting, follow the steps in `docs/setup.md`." The agent reads the
@@ -38,9 +38,11 @@ The role policy creates a bypass, and it is worth stating plainly.
 > payload file as `DOCS`, so it lands in the suppressed ledger at LOW rather than in
 > `FLAGGED`.
 
-v1 does not follow that reference hop. The extractor does not resolve links, includes or file references, because a reference resolver is an attack surface of its own (path traversal, symlink escape, fetch-on-read) running trusted and first. Resolving one level of explicit reference from an INSTRUCTION file is the obvious v2 change.
+The scanner now closes that form of the bypass by following one explicit reference hop from an `INSTRUCTION` file. It never opens or resolves the referenced path on the filesystem. Every bundle file has already been loaded and checked before roles are assigned, so resolution is only POSIX path normalization followed by an exact, case-sensitive lookup in that same target's file records. A `..` path cannot reach a filesystem call, a symlink that escaped the bundle was already rejected and is not present to match, and there is no fetch-on-read.
 
-Until then: the hit is not lost, it is in `report["suppressed"]` on every scan. If a `SKILL.md` points the agent at another file, read that file yourself and treat it as an instruction surface. `BASELINE_DRIFT` still covers documentation files, so a README that changes inside a bundle you already accepted is reported regardless of role.
+A link is not automatically a delegation. The line carrying the reference must use an action cue such as "follow", "steps in", "before starting" or "read and follow"; a bare `- [usage](docs/usage.md)` in a documentation list is deliberately left as a citation. Claude Code `@path/to/file.md` imports are followed unconditionally because that syntax itself loads the file as authority. The pass follows one hop only, accepts only `.md` and `.markdown`, and can only match a file already loaded from the same bundle. It follows at most 5 references from one instruction file, promotes at most 20 records across a target, and promotes at most 262144 bytes of content; hitting a cap is recorded in target metadata rather than hidden.
+
+Residual gaps remain. A reference introduced only by pointer language — `see`, `consult`, `refer to` or a bare `read` — is not followed. Promoting on pointer language produced false positives on ordinary documentation, and the trade is deliberate: a false positive at full severity costs more than this miss. Neither is a `TEST`-role file promoted, even when delegated to, because test context is deliberately suppressed. A file outside the bundle cannot match, and delegation phrased without a cue in the scanner's bounded cue list is not followed. Those cases remain in the suppressed ledger when an existing behaviour pattern sees them; `BASELINE_DRIFT` still covers documentation files regardless of role.
 
 ## Summary
 

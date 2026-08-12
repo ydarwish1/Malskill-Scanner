@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "corpora": [
+    {
+      "id": "anthropics-skills",
+      "repo": "https://github.com/anthropics/skills",
+      "commit": "f17010c9bb483898c1d9c9f42dde2b3a98889434",
+      "kind": "public",
+      "note": "Anthropic's own published Claude skills."
+    },
+    {
+      "id": "mcp-servers",
+      "repo": "https://github.com/modelcontextprotocol/servers",
+      "commit": "76d64c822f5125032f89eb71dbdb94e42b434821",
+      "kind": "public",
+      "note": "The official Model Context Protocol reference servers."
+    },
+    {
+      "id": "local-machine",
+      "repo": null,
+      "commit": null,
+      "kind": "private-aggregate",
+      "note": "The maintainer's own installed extensions. Aggregate counts only — no bundle names, no paths, no evidence strings are ever emitted for this corpus."
+    }
+  ]
+}

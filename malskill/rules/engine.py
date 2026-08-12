@@ -241,6 +241,9 @@ def run(
 
     files_seen = 0
     files_partial = 0
+    reference_promotions = 0
+    reference_targets = 0
+    reference_caps: List[str] = []
     total = len(inventory.targets)
     hashes: Dict[str, Dict[str, Any]] = {}
 
@@ -285,6 +288,15 @@ def run(
             files_partial += partial
             unscanned.extend(target_unscanned)
             suppressed.extend(getattr(target, "suppressed", []) or [])
+
+            meta = getattr(target, "meta", {}) or {}
+            promoted = len(meta.get("reference_hops", []) or [])
+            if promoted:
+                reference_promotions += promoted
+                reference_targets += 1
+            capped = meta.get("reference_hops_capped")
+            if capped:
+                reference_caps.append("%s: %s" % (target.display, capped))
 
             if target_findings:
                 states[target.display] = STATE_FLAGGED
@@ -341,6 +353,15 @@ def run(
     )
     if note:
         result.notes.append(note)
+    if reference_promotions:
+        result.notes.append(
+            "%d file(s) across %d target(s) promoted to instruction context by reference."
+            % (reference_promotions, reference_targets)
+        )
+    if reference_caps:
+        result.notes.append(
+            "reference-hop analysis cap hit: %s." % "; ".join(reference_caps)
+        )
     if unknown:
         result.notes.append(
             "findings emitted with IDs missing from the registry: %s" % ", ".join(unknown)

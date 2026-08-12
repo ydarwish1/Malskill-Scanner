@@ -72,6 +72,11 @@
       "name": "localhost-only-diagram",
       "mode": "paths",
       "trap": "Claims to work offline and does contact HTTP endpoints, but only loopback ones written WITHOUT a URL scheme ('curl localhost:3000', '127.0.0.1:8787/health', '[::1]:8787'). The blueprint's localhost exemption has to survive the spelling everybody actually uses."
+    },
+    {
+      "name": "docs-reference-link",
+      "mode": "paths",
+      "trap": "A plain documentation link is a citation, not a delegation. Its linked docs quote curl piped to sh and must remain DOCS context rather than being promoted."
     }
   ]
 }
