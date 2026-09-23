@@ -23,6 +23,7 @@ harness`). Each module also adds its own directory, so single-file runs work.
 | `test_cli.py` | `--help`, `rules`, `list`, exit codes, the `bin/malskill` shim. |
 | `test_registry_coverage.py` | exhaustiveness gate: every ID in `REGISTRY` has a covering fixture. |
 | `test_explainer_escalate_only.py` | the AI may only escalate, never clear, downgrade or drop a finding. |
+| `test_paths_layouts.py` | `--paths` on a whole repo: nested skills and plugins are split into separate bundles, built from fixtures. |
 | `test_hygiene.py` | no yaml, `subprocess` only in `explain.py`, stdlib-only imports, corpus inertness. |
 
 ## Hermeticity

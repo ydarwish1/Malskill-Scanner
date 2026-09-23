@@ -40,6 +40,8 @@ So the scanner flags contradictions instead of keywords:
 - Reading `~/.ssh` in a declared credential manager: nothing.
 - Reading `~/.ssh` in the same bundle that posts to an external host: `SENSITIVE_READ_PLUS_EGRESS`.
 
+Bundles are judged one at a time, because a claim only means something about the bundle that makes it. `--paths` on a whole skills repository, plugin marketplace or project splits it at every `SKILL.md` and `plugin.json` it finds, so one skill's network declaration can't excuse another skill's offline claim, and one skill's `~/.ssh` read can't pair with a different skill's `curl`.
+
 Where a pattern lives matters too. A `curl | bash` one-liner quoted in a README is documentation; the same line in a script or a SKILL.md an agent obeys is behavior. Documentation hits are counted and disclosed, not flagged (rerun with `--paranoid` to see them).
 
 The rules are deterministic. The optional AI explainer (`--explain`) runs with all customizations disabled, no tools, no MCP servers, and no setting sources, inside an empty temporary directory with a scrubbed environment. If the installed binary does not support those isolation flags, the explainer refuses to run at all. It can only raise a finding's severity or add context and can never clear one, so a malicious bundle can't talk its way out.
@@ -58,7 +60,7 @@ Detection runs on raw bytes. Only the copy shown to you is sanitized: invisible 
 ```bash
 ./bin/malskill scan                # full audit
 ./bin/malskill scan --json         # machine-readable report
-./bin/malskill scan --paths DIR    # audit a specific bundle instead of discovery
+./bin/malskill scan --paths DIR    # audit a bundle, or a whole repo before installing from it
 ./bin/malskill scan --paranoid     # include hits suppressed in docs/test context
 ./bin/malskill scan --explain      # add the zero-tool AI explainer
 ./bin/malskill list                # show what would be scanned, run no rules
@@ -73,6 +75,7 @@ Exit codes: 0 no findings, 1 findings, 2 scanner error.
 - [docs/RULES.md](docs/RULES.md): every finding ID, what fires it, why it matters, and how it can be wrong
 - [docs/BLUEPRINT.md](docs/BLUEPRINT.md): the spec this was built against
 - [tests/README.md](tests/README.md): the test suite and fixture corpus
+- [eval/BENCHMARK.md](eval/BENCHMARK.md): the generated detection benchmark, every labeled fixture laid out as a single bundle, a skills repo, a plugin marketplace and project skills, with detection and false-positive rates per layout
 - [eval/RESULTS.md](eval/RESULTS.md): the generated evaluation artifact: which public corpora were scanned, at which pinned commits, with runtime and machine details, and how to reproduce it
 
 Tests: `python3 -m unittest discover -s tests`. The bar, asserted in the suite: a known-benign corpus full of curl-using, ssh-reading, injection-quoting bundles must produce zero findings.

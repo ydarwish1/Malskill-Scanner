@@ -1,4 +1,18 @@
-# Real-world evaluation
+# Evaluation
+
+Two generated artifacts live here. Neither may be hand-edited.
+
+## Detection benchmark
+
+`eval/run_bench.py` takes every labeled `paths`-mode fixture in `fixtures/malicious` and `fixtures/benign` and lays them out the ways people actually meet skills: alone, side by side in a skills repository, in a repository holding only the benign ones, one per plugin in a marketplace, and as project skills under `.claude/skills/`. It scans each layout once and scores every sample by where its findings land. A malicious sample counts as detected only when its expected rule fires inside its own directory; a benign sample is a false positive when anything does.
+
+```bash
+python3 eval/run_bench.py --out eval/BENCHMARK.md
+```
+
+It needs no network and runs in a second.
+
+## Real-world evaluation
 
 This harness runs MalSkill Scanner against pinned public repositories rather than the constructed regression fixtures. It generates a reproducible receipt for corpus size, rule findings, files the scanner could not fully analyze, run time, and a public-corpus worksheet for manual false-positive review.
 

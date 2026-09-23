@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from malskill.rules import REASON_PARSE_ERROR, REASON_UNREADABLE, Unscanned
 from malskill.targets import (
     MAX_FILE_BYTES,
+    SKIP_DIRNAMES,
     Inventory,
     Target,
     TargetKind,
@@ -651,16 +652,117 @@ def _count_plugin_entries(data: Any) -> int:
 
 
 def _has_manifest(path: str) -> bool:
-    return any(os.path.exists(os.path.join(path, name)) for name in _BUNDLE_MANIFESTS)
+    for name in _BUNDLE_MANIFESTS:
+        full = os.path.join(path, name)
+        if name == ".claude-plugin":
+            # A marketplace ships .claude-plugin/marketplace.json at the root of a
+            # repository full of independent plugins and skills. Only a plugin.json makes
+            # the directory one installable plugin.
+            if os.path.isfile(os.path.join(full, "plugin.json")):
+                return True
+            continue
+        if os.path.exists(full):
+            return True
+    return False
+
+
+def _is_plugin_root(path: str) -> bool:
+    return os.path.isfile(os.path.join(path, "plugin.json")) or os.path.isfile(
+        os.path.join(path, ".claude-plugin", "plugin.json")
+    )
+
+
+#: How deep below a --paths argument to look for nested bundles. Real layouts sit at
+#: depth 2 (skills/<name>/) to 4 (plugins/<p>/skills/<name>/); the bound keeps a scan of
+#: a huge checkout from walking every directory in it twice.
+_NESTED_BUNDLE_DEPTH = 6
+
+
+def _nested_bundle_roots(path: str) -> List[str]:
+    """Directories below ``path`` that are bundles in their own right.
+
+    A walk stops descending at the first bundle root it meets, so a skill that carries a
+    nested example skill stays one bundle, exactly as it installs.
+    """
+    roots: List[str] = []
+    base_depth = path.rstrip(os.sep).count(os.sep)
+    for dirpath, dirnames, _ in os.walk(path, topdown=True, followlinks=False):
+        if dirpath != path and _has_manifest(dirpath):
+            roots.append(dirpath)
+            dirnames[:] = []
+            continue
+        if dirpath.rstrip(os.sep).count(os.sep) - base_depth >= _NESTED_BUNDLE_DEPTH:
+            dirnames[:] = []
+            continue
+        dirnames[:] = sorted(
+            d
+            for d in dirnames
+            if d not in SKIP_DIRNAMES and not os.path.islink(os.path.join(dirpath, d))
+        )
+    return roots
+
+
+def _list_dir(path: str) -> Tuple[List[str], List[str]]:
+    subdirs: List[str] = []
+    loose_files: List[str] = []
+    for entry in sorted(os.listdir(path)):
+        full = os.path.join(path, entry)
+        if os.path.isdir(full) and not os.path.islink(full):
+            if entry not in (".git",):
+                subdirs.append(full)
+        elif os.path.isfile(full):
+            loose_files.append(full)
+    return subdirs, loose_files
+
+
+def _split_container(path: str, roots: List[str], top: str) -> List[Target]:
+    """One target per nested bundle, and per sibling directory that holds none.
+
+    Every directory between ``top`` and a bundle is a container: its immediate
+    subdirectories are split further, and its own loose files become one
+    non-recursive target, so no file is dropped and no two bundles are merged.
+    """
+    targets: List[Target] = []
+    subdirs, loose_files = _list_dir(path)
+    for subdir in subdirs:
+        if subdir in roots:
+            kind = TargetKind.PLUGIN if _is_plugin_root(subdir) else TargetKind.SKILL
+            targets.append(_skill_target(subdir, "--paths", kind))
+        elif any(root.startswith(subdir + os.sep) for root in roots):
+            targets.extend(_split_container(subdir, roots, top))
+        else:
+            targets.append(_skill_target(subdir, "--paths"))
+    if loose_files and path != top:
+        loose = _skill_target(path, "--paths")
+        loose.recursive = False
+        targets.append(loose)
+    return targets
+
+
+def _disambiguate(targets: List[Target], top: str) -> None:
+    """Two bundles named ``helper`` in one repository must not share a report row."""
+    seen: Dict[str, int] = {}
+    for target in targets:
+        seen[target.display] = seen.get(target.display, 0) + 1
+    for target in targets:
+        if seen[target.display] > 1:
+            rel = os.path.relpath(target.path, top).replace(os.sep, "/")
+            target.name = rel if rel != "." else target.name
 
 
 def expand_paths(paths: List[str], inventory: Inventory) -> List[Target]:
     """Turn --paths arguments into bundle targets.
 
-    A directory containing a manifest (SKILL.md, plugin.json, .claude-plugin/) is one
-    bundle. A directory of directories is treated as a *container* and each immediate
-    subdirectory becomes its own bundle — that matters, because bundle-level mismatch
-    rules must not pair one skill's credential read with a different skill's curl.
+    A directory containing a manifest (SKILL.md, plugin.json, .claude-plugin/plugin.json)
+    is one bundle. Anything else is a *container*, and bundle-level mismatch rules must
+    never see two bundles as one: one skill's credential read must not pair with a
+    different skill's curl, and one skill's declared network use must not excuse
+    another skill's offline claim.
+
+    Containers are split at every bundle found below them, at any depth up to
+    ``_NESTED_BUNDLE_DEPTH`` (``skills/<name>/``, ``plugins/<p>/skills/<name>/``,
+    ``.claude/skills/<name>/``). A container with no nested bundle keeps the flat rule:
+    each immediate subdirectory is its own bundle.
     """
     targets: List[Target] = []
     for raw in paths:
@@ -681,16 +783,8 @@ def expand_paths(paths: List[str], inventory: Inventory) -> List[Target]:
             )
             continue
 
-        subdirs = []
-        loose_files = []
         try:
-            for entry in sorted(os.listdir(path)):
-                full = os.path.join(path, entry)
-                if os.path.isdir(full) and not os.path.islink(full):
-                    if entry not in (".git",):
-                        subdirs.append(full)
-                elif os.path.isfile(full):
-                    loose_files.append(full)
+            subdirs, loose_files = _list_dir(path)
         except OSError as exc:
             inventory.unscanned.append(
                 _unscanned("path:%s" % raw, path, REASON_UNREADABLE, str(exc))
@@ -701,12 +795,20 @@ def expand_paths(paths: List[str], inventory: Inventory) -> List[Target]:
             targets.append(_skill_target(path, "--paths"))
             continue
 
-        for subdir in subdirs:
-            targets.append(_skill_target(subdir, "--paths"))
+        try:
+            roots = _nested_bundle_roots(path)
+            found = _split_container(path, roots, path)
+        except OSError as exc:
+            inventory.unscanned.append(
+                _unscanned("path:%s" % raw, path, REASON_UNREADABLE, str(exc))
+            )
+            continue
+        _disambiguate(found, path)
+        targets.extend(found)
         if loose_files:
             inventory.notes.append(
                 "%s: %d loose file(s) at the container root scanned separately from the "
-                "%d bundle(s) below it" % (path, len(loose_files), len(subdirs))
+                "%d bundle(s) below it" % (path, len(loose_files), len(found))
             )
             root_target = _skill_target(path, "--paths")
             root_target.recursive = False

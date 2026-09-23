@@ -56,9 +56,15 @@ command strings in `settings.json`. MCP servers from `~/.claude.json`, project `
 and Claude Desktop, plus Cursor and others behind `--all-clients`.
 
 `--home DIR` redirects all home-based discovery and the baseline path, which is how tests
-stay hermetic. `--paths DIR` scans specific bundles instead of discovery, and a directory
-of directories becomes one bundle per subdirectory so one skill's secret read cannot pair
-with another skill's `curl`.
+stay hermetic. `--paths DIR` scans specific bundles instead of discovery. A directory with
+its own `SKILL.md` or `plugin.json` is one bundle. Any other directory is a container: it
+is split at every nested `SKILL.md` or `plugin.json` (up to six levels down, so
+`skills/<name>/`, `plugins/<p>/skills/<name>/` and `.claude/skills/<name>/` all work),
+directories holding no bundle become one bundle each, and loose files at each level are
+scanned as their own non-recursive target. A `.claude-plugin/` holding only
+`marketplace.json` marks a marketplace, not a plugin. So one skill's secret read cannot
+pair with another skill's `curl`, and one skill's network declaration cannot excuse
+another's offline claim.
 
 Reading rules: 2 MiB cap per file, then the first 2 MiB still gets byte rules. A NUL in the
 first 8 KiB means binary. Symlinks resolving outside the bundle are a finding, not a
