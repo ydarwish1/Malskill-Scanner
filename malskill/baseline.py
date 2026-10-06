@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from malskill import __version__
-from malskill.rules import REASON_UNREADABLE, Finding, Unscanned, make_finding
+from malskill.rules import REASON_TOO_LARGE, REASON_UNREADABLE, Finding, Unscanned, make_finding
 from malskill.sanitize import for_display
 
 __all__ = [
@@ -376,15 +376,18 @@ def diff(
     snapshot: Dict[str, Dict[str, Any]],
     store: BaselineStore,
     unhashed: Dict[str, List[Unscanned]],
-) -> List[FileChange]:
+) -> Tuple[List[FileChange], List[Unscanned]]:
     """Every file added, changed or removed since the accepted baseline.
 
-    A whole target that appeared or disappeared lists each of its files; one with no
-    hashable file at all is listed once as ``.``. A recorded file that is in
-    ``unhashed`` now, or sits under a folder that is, is ``unreadable``, not
-    ``removed``: it may still be there.
+    Returns ``(changes, uncompared)``. A whole target that appeared or disappeared lists
+    each of its files; one with no hashable file at all is listed once as ``.``. A
+    recorded file that is in ``unhashed`` now, or sits under a folder that is, is
+    ``unreadable``, not ``removed``: it may still be there. A target over
+    ``MAX_FILES_PER_TARGET`` files is compared only up to the last file both snapshots
+    hold, and the rest is returned in ``uncompared``.
     """
     changes: List[FileChange] = []
+    uncompared: List[Unscanned] = []
     for key in sorted(set(snapshot) | set(store.targets)):
         current = snapshot.get(key)
         previous = store.get(key)
@@ -394,10 +397,13 @@ def diff(
         old_files = (previous or {}).get("files") or {}
         new_files = (current or {}).get("files") or {}
         unreadable = _unhashed_rels(path, unhashed.get(key, []))
+        end = _compared_up_to(previous, current)
         rels = sorted(set(old_files) | set(new_files))
         if not rels and (current is None or previous is None):
             rels = ["."]
         for rel in rels:
+            if end is not None and rel > end:
+                break
             if rel in old_files and rel in new_files:
                 if old_files[rel] == new_files[rel]:
                     continue
@@ -409,7 +415,27 @@ def diff(
             else:
                 change = "removed"
             changes.append(FileChange(target=display, path=path, file=rel, change=change))
-    return changes
+        if end is not None:
+            uncompared.append(
+                Unscanned(
+                    target=display,
+                    file=path,
+                    reason=REASON_TOO_LARGE,
+                    detail="more than %d files; files sorting after %s were not compared"
+                    % (MAX_FILES_PER_TARGET, end),
+                )
+            )
+    return changes, uncompared
+
+
+def _compared_up_to(*entries: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The last file every truncated snapshot holds; None when none was truncated."""
+    ends = [
+        max(entry["files"])
+        for entry in entries
+        if entry and entry.get("truncated") and entry.get("files")
+    ]
+    return min(ends) if ends else None
 
 
 def _unhashed_rels(path: str, entries: List[Unscanned]) -> List[str]:

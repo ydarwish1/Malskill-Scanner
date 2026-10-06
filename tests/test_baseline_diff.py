@@ -204,6 +204,53 @@ class BaselineDiffTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, str(result))
         self.assertIn("UNCHANGED", result.stdout)
 
+    def build_big_bundle(self, count: int) -> Tuple[str, str]:
+        """A --paths repo holding one bundle of SKILL.md plus ``count`` text files."""
+        repo = os.path.join(self.tmp.name, "repo")
+        bundle = fixture_gen.build_clean_bundle(repo, "big")
+        os.remove(os.path.join(bundle, "scripts", "run.py"))
+        os.rmdir(os.path.join(bundle, "scripts"))
+        for index in range(count):
+            with open(os.path.join(bundle, "f%04d.txt" % index), "w", encoding="utf-8") as handle:
+                handle.write("%d\n" % index)
+        return repo, bundle
+
+    def test_bundle_over_the_file_cap_is_compared_within_the_window(self) -> None:
+        repo, bundle = self.build_big_bundle(5005)
+        self.accept_baseline(("--paths", repo))
+
+        result, report = self.diff_json(("--paths", repo))
+        self.assertEqual(0, result.returncode, str(result))
+        self.assertEqual([], report["changes"])
+        self.assertEqual(1, len(report["unscanned"]), report["unscanned"])
+        self.assertIn("more than 5000 files", report["unscanned"][0]["detail"])
+        text = self.diff(("--paths", repo))
+        self.assertIn("NOT-FULLY-ANALYZED (1)", text.stdout)
+        self.assertNotIn("Every discovered file", text.stdout)
+
+        with open(os.path.join(bundle, "a-new.txt"), "w", encoding="utf-8") as handle:
+            handle.write("new\n")
+        with open(os.path.join(bundle, "f0001.txt"), "a", encoding="utf-8") as handle:
+            handle.write("changed\n")
+        result, report = self.diff_json(("--paths", repo))
+        self.assertEqual(1, result.returncode, str(result))
+        self.assertEqual(
+            [("added", "skill:big", "a-new.txt"), ("changed", "skill:big", "f0001.txt")],
+            self.changes(report),
+            "a file pushed out of the 5000-file window must not show as removed",
+        )
+
+    def test_bundle_growing_past_the_file_cap_is_not_reported_as_removals(self) -> None:
+        repo, bundle = self.build_big_bundle(4999)
+        self.accept_baseline(("--paths", repo))
+        with open(os.path.join(bundle, "a-new.txt"), "w", encoding="utf-8") as handle:
+            handle.write("new\n")
+
+        result, report = self.diff_json(("--paths", repo))
+        self.assertEqual(1, result.returncode, str(result))
+        self.assertEqual([("added", "skill:big", "a-new.txt")], self.changes(report))
+        self.assertIn("f4997.txt were not compared", report["unscanned"][0]["detail"])
+
     # -- unreadable files ---------------------------------------------------------
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "needs os.mkfifo")
@@ -299,6 +346,7 @@ class BaselineDiffTests(unittest.TestCase):
         )
         self.assertEqual([], report["unscanned"])
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs os.mkfifo")
     def test_same_named_skills_at_different_paths_are_kept_apart(self) -> None:
         project = os.path.join(self.tmp.name, "project")
         project_skills = os.path.join(project, ".claude", "skills")

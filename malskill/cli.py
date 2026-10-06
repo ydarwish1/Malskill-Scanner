@@ -309,10 +309,11 @@ def cmd_baseline_diff(args: argparse.Namespace, stdout) -> int:
         inventory = discover(options)
         unhashed: Dict[str, List[Unscanned]] = {}
         snapshot = baseline_module.collect(inventory, unhashed)
-        changes = baseline_module.diff(snapshot, store, unhashed)
+        changes, uncompared = baseline_module.diff(snapshot, store, unhashed)
         unscanned = list(inventory.unscanned)
         for key in sorted(unhashed):
             unscanned.extend(unhashed[key])
+        unscanned.extend(uncompared)
     stdout.write(
         render_baseline_diff(
             store, changes, unscanned, targets=len(snapshot), as_json=args.json
