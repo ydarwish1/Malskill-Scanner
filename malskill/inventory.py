@@ -2,9 +2,9 @@
 
 This is the trusted extractor layer. It runs first, over attacker-controlled bytes, so it
 does as little as possible: ``os.listdir``/``os.walk``, byte reads, ``json.loads``, and
-the minimal frontmatter parser. No YAML library, no TOML library beyond a tiny
-hand-written subset, no rendering, no symlink following out of a root, and nothing from
-the scanned content is ever executed.
+the minimal frontmatter parser. No YAML library, no TOML beyond the stdlib ``tomllib``
+(Python 3.11+) and a tiny hand-written subset for 3.9 and 3.10, no rendering, no symlink
+following out of a root, and nothing from the scanned content is ever executed.
 
 ``--home DIR`` replaces ``~`` for *all* home-based discovery (and for the baseline path),
 which is what makes hermetic testing possible: point it at an empty directory and the
@@ -37,6 +37,11 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import tomllib
+except ImportError:  # Python 3.9 and 3.10: parse_toml_subset below is used instead
+    tomllib = None  # type: ignore[assignment]
 
 from malskill.rules import REASON_PARSE_ERROR, REASON_UNREADABLE, Unscanned
 from malskill.targets import (
@@ -188,8 +193,25 @@ def _line_of_snippet(path: str, snippet: str) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------------------
-# Minimal TOML subset (for ~/.codex/config.toml only)
+# TOML (for ~/.codex/config.toml only)
 # ---------------------------------------------------------------------------------------
+
+
+def _parse_codex_toml(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Parse with ``tomllib`` when the running Python has it, else the subset below.
+
+    Returns (data, error). Pathological nesting raises RecursionError in either parser and
+    is reported like any other parse failure.
+    """
+    if tomllib is None:
+        parse, label = parse_toml_subset, "TOML outside the supported subset"
+    else:
+        parse, label = tomllib.loads, "invalid TOML"
+    try:
+        return parse(text), None
+    except (ValueError, RecursionError) as exc:
+        return None, "%s (%s)" % (label, exc)
+
 
 _TOML_TABLE_RE = re.compile(r"^\s*\[\[?([^\]]+)\]\]?\s*$")
 _TOML_KV_RE = re.compile(r"^\s*([A-Za-z0-9_.\"'-]+)\s*=\s*(.+?)\s*$")
@@ -221,8 +243,10 @@ def parse_toml_subset(text: str) -> Dict[str, Any]:
         kv = _TOML_KV_RE.match(line)
         if not kv:
             raise ValueError("unsupported line: %s" % line[:60])
-        key = kv.group(1).strip().strip("\"'")
-        current[key] = _toml_value(kv.group(2))
+        key = _split_toml_key(kv.group(1))
+        if len(key) != 1:
+            raise ValueError("dotted keys are not supported: %s" % line[:60])
+        current[key[0]] = _toml_value(kv.group(2))
     return root
 
 
@@ -437,7 +461,7 @@ def _server_targets(
             if key in config:
                 meta[key] = config[key]
         try:
-            blob = json.dumps({name: config}, indent=2, ensure_ascii=False)
+            blob = json.dumps({name: config}, indent=2, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
             blob = str(config)
         target = Target(
@@ -556,15 +580,14 @@ def _load_codex_toml(path: str, inventory: Inventory) -> None:
             )
         )
         return
-    try:
-        data = parse_toml_subset(text)
-    except ValueError as exc:
+    data, error = _parse_codex_toml(text)
+    if error is not None or data is None:
         inventory.unscanned.append(
             _unscanned(
                 "mcp-config:%s" % os.path.basename(path),
                 path,
                 REASON_PARSE_ERROR,
-                "TOML outside the supported subset (%s)" % exc,
+                error or "unparseable",
                 finding_id="MCP_UNPARSEABLE_CONFIG",
             )
         )
