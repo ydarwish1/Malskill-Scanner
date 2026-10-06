@@ -83,6 +83,7 @@ python3 eval/run_bench.py --out eval/BENCHMARK.md   # offline, about a second
 ./bin/malskill scan --explain      # add the zero-tool AI explainer
 ./bin/malskill scan --fail-on high # exit 1 only for HIGH or CRITICAL findings
 ./bin/malskill scan --summary      # one line: state, findings per severity, files not fully analyzed
+./bin/malskill scan --markdown     # the report as Markdown for a pull request comment
 ./bin/malskill list                # show what would be scanned, run no rules
 ./bin/malskill rules               # print every rule and what fires it
 ./bin/malskill baseline update     # accept current state
@@ -99,10 +100,13 @@ state: FLAGGED   critical: 0   high: 2   medium: 0   low: 0   not-fully-analyzed
 
 The counts are the `severity_counts` and the number of `unscanned` entries of the `--json` report, after baseline drift and `--explain` escalations. `--summary` cannot be combined with `--json`.
 
+`scan --markdown` prints the same report as Markdown to paste into a pull request comment, with the same exit code and `--show-unscanned` to list every file not fully analyzed. Every file name, piece of evidence, explanation and note is sanitised exactly like the terminal report (invisible unicode escaped as `\u{200B}`, URLs defanged as `hxxps://evil[.]example[.]com`) and then put in an inline code span, so Markdown, HTML, links and @mentions inside a skill's files show as plain text instead of rendering. Target names and scope paths are sanitised the same way. `--json`, `--summary` and `--markdown` cannot be combined.
+
 `baseline diff` takes the same scope flags as `baseline update` (and `--json`) and lists every file `added`, `changed` or `removed` since the accepted baseline, plus `unreadable` for a recorded file that can no longer be hashed. It exits 0 when nothing changed, 1 when something did, and 2 when there is no baseline or it fails its self-checksum. File names are shown with invisible unicode escaped and URLs defanged, as in the scan report.
 
 ## Known limits
 
+- `scan --markdown` is not cut to fit a comment: GitHub rejects comments over 65,536 characters, so on a scan with hundreds of findings use `--summary` or `--json` instead. Long values are truncated at the same lengths as the terminal report (400 characters of evidence, 600 of explanation).
 - `scan --summary` prints no file names, notes or explainer output, and ignores `--show-unscanned`; run the scan without it, or with `--json`, to see which findings and files the counts are made of.
 - `--fail-on` judges each finding by its severity alone. `BASELINE_TAMPERED` is HIGH, so `--fail-on critical` exits 0 on a tampered baseline (the finding is still printed), and NOT-FULLY-ANALYZED never changes the exit code at any level.
 - JSONC is accepted only in MCP config files: `.mcp.json`, `mcp.json`, `*.mcp.json`, `claude_desktop_config.json` and `~/.claude.json` (including the hooks in its `projects` entries). A `settings.json` or `settings.local.json` with comments, at home, in a project or inside a bundle, is still reported as NOT-FULLY-ANALYZED. A `//` comment ends at CR or LF, as in the VS Code and Cursor parser; a U+2028 or U+2029 after one leaves the file NOT-FULLY-ANALYZED. Comments in `~/.claude.json`, a project `.mcp.json` or a client config are dropped before the rules run, so text inside them is never matched. A config inside a `--paths` bundle is also scanned as a raw file, comments included.

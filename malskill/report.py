@@ -21,6 +21,7 @@ set, only findings at or above that severity exit 1; lower ones are still printe
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -179,10 +180,9 @@ class Report:
         fields.append("not-fully-analyzed: %d" % len(self.unscanned))
         return "   ".join(fields)
 
-    def render_terminal(self, *, show_unscanned: bool = False) -> str:
-        lines: List[str] = []
+    def _headline(self) -> str:
         stats = self.result.stats
-        lines.append(
+        return (
             "MalSkill Scanner v%s — scanned %s target%s, %s file%s (%s fully, %s partially)"
             % (
                 __version__,
@@ -194,6 +194,41 @@ class Report:
                 "{:,}".format(stats.get("files_partially_analyzed", 0)),
             )
         )
+
+    def _flagged_heading(self) -> str:
+        counts = self.severity_counts()
+        breakdown = ", ".join(
+            "%d %s" % (counts[s.value], s.value) for s in SEVERITY_ORDER if counts.get(s.value)
+        )
+        return "FLAGGED (%d)  [%s]" % (len(self.findings), breakdown)
+
+    def _unscanned_breakdown(self) -> str:
+        summary = self.unscanned_summary()
+        return ", ".join("%d %s" % (count, label) for label, count in sorted(summary.items()))
+
+    def _clean_heading(self) -> str:
+        clean = self.clean_targets()
+        return "CLEAN (%d target%s)" % (len(clean), "" if len(clean) == 1 else "s")
+
+    def _all_notes(self) -> List[str]:
+        notes = list(self.result.notes) + list(self.notes)
+        if self.explainer_note:
+            notes.append(self.explainer_note)
+        return notes
+
+    def _footer(self) -> str:
+        footer = "state: %s   findings: %d   not-fully-analyzed: %d   exit: %d" % (
+            self.state,
+            len(self.findings),
+            len(self.unscanned),
+            self.exit_code(),
+        )
+        if self.fail_on is not None:
+            footer += "   fail-on: %s" % self.fail_on.value
+        return footer
+
+    def render_terminal(self, *, show_unscanned: bool = False) -> str:
+        lines: List[str] = [self._headline()]
         scope_bits = []
         if self.scope.get("home"):
             scope_bits.append("home=%s" % self.scope["home"])
@@ -205,28 +240,19 @@ class Report:
 
         # ---- FLAGGED -----------------------------------------------------------------
         if self.findings:
-            counts = self.severity_counts()
-            summary = ", ".join(
-                "%d %s" % (counts[s.value], s.value)
-                for s in SEVERITY_ORDER
-                if counts.get(s.value)
-            )
-            lines.append("FLAGGED (%d)  [%s]" % (len(self.findings), summary))
+            lines.append(self._flagged_heading())
             for finding in self.findings:
                 lines.extend(_render_finding(finding))
             lines.append("")
         else:
             lines.append("FLAGGED (0)")
-            lines.append("  No rule fired on any analyzed content.")
+            lines.append("  %s" % _NO_FINDINGS)
             lines.append("")
 
         # ---- NOT-FULLY-ANALYZED --------------------------------------------------------
         lines.append("NOT-FULLY-ANALYZED (%d)" % len(self.unscanned))
         if self.unscanned:
-            summary = self.unscanned_summary()
-            detail = ", ".join(
-                "%d %s" % (count, label) for label, count in sorted(summary.items())
-            )
+            detail = self._unscanned_breakdown()
             if not show_unscanned:
                 detail += " — list every entry with --show-unscanned"
             lines.append("  %s" % detail)
@@ -243,25 +269,15 @@ class Report:
                             else "",
                         )
                     )
-            lines.append(
-                "  These files were not (or not fully) analyzed. Nothing about them is "
-                "implied by their absence from the flagged list."
-            )
+            lines.append("  %s" % _UNSCANNED_CAVEAT)
         else:
-            lines.append("  Every discovered file was read in full.")
+            lines.append("  %s" % _ALL_READ)
         lines.append("")
 
         # ---- CLEAN ---------------------------------------------------------------------
-        clean = self.clean_targets()
-        lines.append(
-            "CLEAN (%d target%s): no rule fired. This is not a guarantee that they are "
-            "harmless — it means the deterministic rules in this version found nothing."
-            % (len(clean), "" if len(clean) == 1 else "s")
-        )
+        lines.append("%s: no rule fired. %s" % (self._clean_heading(), _CLEAN_CAVEAT))
 
-        notes = list(self.result.notes) + list(self.notes)
-        if self.explainer_note:
-            notes.append(self.explainer_note)
+        notes = self._all_notes()
         if notes:
             lines.append("")
             lines.append("notes:")
@@ -269,22 +285,127 @@ class Report:
                 lines.append("  - %s" % for_display(note, 400))
 
         lines.append("")
-        footer = "state: %s   findings: %d   not-fully-analyzed: %d   exit: %d" % (
-            self.state,
-            len(self.findings),
-            len(self.unscanned),
-            self.exit_code(),
+        lines.append(self._footer())
+        return "\n".join(lines)
+
+    def render_markdown(self, *, show_unscanned: bool = False) -> str:
+        """The terminal report as Markdown for a pull request comment.
+
+        Every file-derived value is sanitised by the same :func:`for_display` call as in
+        :meth:`render_terminal` and then put in an inline code span, so Markdown, HTML,
+        links and @mentions in a file name or a piece of evidence render as plain text.
+        """
+        lines: List[str] = ["## %s" % self._headline(), ""]
+        scope_bits = []
+        if self.scope.get("home"):
+            scope_bits.append("home=%s" % _md_code(for_display(self.scope["home"], 0)))
+        if self.scope.get("paths"):
+            scope_bits.append(
+                "paths=%s"
+                % ", ".join(_md_code(for_display(path, 0)) for path in self.scope["paths"])
+            )
+        if scope_bits:
+            lines.extend(["scope: %s" % "  ".join(scope_bits), ""])
+
+        if self.findings:
+            lines.extend(["### %s" % self._flagged_heading(), ""])
+            for finding in self.findings:
+                lines.extend(_markdown_finding(finding))
+        else:
+            lines.extend(["### FLAGGED (0)", "", _NO_FINDINGS])
+        lines.append("")
+
+        lines.extend(["### NOT-FULLY-ANALYZED (%d)" % len(self.unscanned), ""])
+        if self.unscanned:
+            detail = self._unscanned_breakdown()
+            if not show_unscanned:
+                detail += " — list every entry with `--show-unscanned`"
+            lines.extend([detail, ""])
+            if show_unscanned:
+                for entry in self.unscanned:
+                    lines.append(
+                        "- %s %s (%s%s)"
+                        % (
+                            _md_code(for_display(entry.target, 120)),
+                            _md_code(for_display(entry.file, 120)),
+                            entry.reason,
+                            ": " + _md_code(for_display(entry.detail, 120))
+                            if entry.detail
+                            else "",
+                        )
+                    )
+                lines.append("")
+            lines.append(_UNSCANNED_CAVEAT)
+        else:
+            lines.append(_ALL_READ)
+        lines.append("")
+
+        lines.extend(
+            ["### %s" % self._clean_heading(), "", "No rule fired. %s" % _CLEAN_CAVEAT, ""]
         )
-        if self.fail_on is not None:
-            footer += "   fail-on: %s" % self.fail_on.value
-        lines.append(footer)
+
+        notes = self._all_notes()
+        if notes:
+            lines.extend(["### notes", ""])
+            lines.extend("- %s" % _md_code(for_display(note, 400)) for note in notes)
+            lines.append("")
+
+        lines.append(_md_code(self._footer()))
         return "\n".join(lines)
 
 
-def _render_finding(finding: Finding) -> List[str]:
-    location = finding.file or ""
+_NO_FINDINGS = "No rule fired on any analyzed content."
+_UNSCANNED_CAVEAT = (
+    "These files were not (or not fully) analyzed. Nothing about them is implied by "
+    "their absence from the flagged list."
+)
+_ALL_READ = "Every discovered file was read in full."
+_CLEAN_CAVEAT = (
+    "This is not a guarantee that they are harmless — it means the deterministic rules "
+    "in this version found nothing."
+)
+
+
+def _location(finding: Finding) -> str:
     if finding.file and finding.line:
-        location = "%s:%d" % (finding.file, finding.line)
+        return "%s:%d" % (finding.file, finding.line)
+    return finding.file or ""
+
+
+def _md_code(text: str) -> str:
+    """``text`` as one inline code span, whatever backticks or spaces it holds."""
+    longest = max((len(run) for run in re.findall("`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    if not text or text[0] in "` " or text[-1] in "` ":
+        text = " %s " % text
+    return fence + text + fence
+
+
+def _markdown_finding(finding: Finding) -> List[str]:
+    header = "- **%s** `%s` in %s" % (
+        finding.severity.value,
+        finding.id,
+        _md_code(for_display(finding.target, 120)),
+    )
+    location = _location(finding)
+    if location:
+        header += " at %s" % _md_code(for_display(location, 120))
+    if finding.escalated:
+        header += " (escalated)"
+    lines = [header]
+    for label, text, limit in (
+        ("evidence", finding.evidence, 400),
+        ("why", finding.why, 600),
+        ("recommendation", finding.recommendation, 400),
+        ("explainer", finding.escalation_note, 300),
+    ):
+        if text:
+            lines.append("  - %s: %s" % (label, _md_code(for_display(text, limit))))
+    return lines
+
+
+def _render_finding(finding: Finding) -> List[str]:
+    location = _location(finding)
     header = "  [%s] %-28s %s" % (
         finding.severity.value,
         finding.id,
