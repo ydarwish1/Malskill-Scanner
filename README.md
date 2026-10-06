@@ -70,7 +70,7 @@ python3 eval/run_bench.py --out eval/BENCHMARK.md   # offline, about a second
 
 - Claude Code skills, plugins, commands, agents (user and project level)
 - Hook commands in `settings.json`
-- MCP server configs: `~/.claude.json`, `.mcp.json`, Claude Desktop, and `--all-clients` for Cursor and others. JSONC is accepted (`//` and `/* */` comments, trailing commas); a config still invalid after that is reported as NOT-FULLY-ANALYZED
+- MCP server configs: `~/.claude.json`, `.mcp.json`, Claude Desktop, and `--all-clients` for Cursor and others. JSONC is accepted (`//` and `/* */` comments, trailing commas); a config still invalid after that is reported as NOT-FULLY-ANALYZED. `~/.codex/config.toml` is read with the standard library's `tomllib` on Python 3.11+, and with a small subset parser on 3.9 and 3.10. A config file larger than 2 MiB is reported as NOT-FULLY-ANALYZED instead of being parsed in part
 - A baseline of every file's hash, so a skill you trusted last week gets flagged when an update changes it
 
 ## Commands
@@ -93,6 +93,7 @@ Exit codes: 0 no findings, 1 findings, 2 scanner error. `--fail-on LEVEL` (`low`
 
 - `--fail-on` judges each finding by its severity alone. `BASELINE_TAMPERED` is HIGH, so `--fail-on critical` exits 0 on a tampered baseline (the finding is still printed), and NOT-FULLY-ANALYZED never changes the exit code at any level.
 - JSONC is accepted only in MCP config files: `.mcp.json`, `mcp.json`, `*.mcp.json`, `claude_desktop_config.json` and `~/.claude.json` (including the hooks in its `projects` entries). A `settings.json` or `settings.local.json` with comments, at home, in a project or inside a bundle, is still reported as NOT-FULLY-ANALYZED. A `//` comment ends at CR or LF, as in the VS Code and Cursor parser; a U+2028 or U+2029 after one leaves the file NOT-FULLY-ANALYZED. Comments in `~/.claude.json`, a project `.mcp.json` or a client config are dropped before the rules run, so text inside them is never matched. A config inside a `--paths` bundle is also scanned as a raw file, comments included.
+- On Python 3.9 and 3.10, `~/.codex/config.toml` is parsed by a small subset parser: one `[table]` header per line, single-line strings, arrays and inline tables, booleans and numbers. Multi-line arrays, dotted keys (`mcp_servers.x.command = ...`, also inside inline tables) and values nested more than 32 levels deep leave the file NOT-FULLY-ANALYZED there, and other TOML it does not know, such as dates, is kept as plain text; Python 3.11+ reads all of it with `tomllib`. On 3.11+ a file `tomllib` rejects, such as one defining the same table twice, is NOT-FULLY-ANALYZED even where the subset parser used to accept it. TOML comments are dropped before the rules run.
 
 ## Docs
 
