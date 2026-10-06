@@ -28,7 +28,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from malskill import __version__, baseline as baseline_module
 from malskill.inventory import DiscoveryOptions, discover
@@ -307,9 +307,12 @@ def cmd_baseline_diff(args: argparse.Namespace, stdout) -> int:
     snapshot: dict = {}
     if store.exists and not store.tampered:
         inventory = discover(options)
+        unhashed: Dict[str, List[Unscanned]] = {}
+        snapshot = baseline_module.collect(inventory, unhashed)
+        changes = baseline_module.diff(snapshot, store, unhashed)
         unscanned = list(inventory.unscanned)
-        snapshot = baseline_module.collect(inventory, unscanned)
-        changes = baseline_module.diff(snapshot, store, unscanned)
+        for key in sorted(unhashed):
+            unscanned.extend(unhashed[key])
     stdout.write(
         render_baseline_diff(
             store, changes, unscanned, targets=len(snapshot), as_json=args.json

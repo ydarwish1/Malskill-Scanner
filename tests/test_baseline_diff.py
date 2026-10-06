@@ -27,9 +27,9 @@ if harness.REPO_ROOT not in sys.path:
     sys.path.insert(0, harness.REPO_ROOT)
 
 from malskill import cli  # noqa: E402
-from malskill.targets import Target  # noqa: E402
+from malskill.targets import MAX_FILE_BYTES, Target  # noqa: E402
 
-ZWSP = "​"
+ZWSP = fixture_gen.ZERO_WIDTH_SPACE
 
 
 class BaselineDiffTests(unittest.TestCase):
@@ -232,6 +232,93 @@ class BaselineDiffTests(unittest.TestCase):
         self.assertEqual([], report["changes"])
         self.assertEqual(["pipe"], [entry["file"] for entry in report["unscanned"]])
         self.assertIn("pipe", self.diff().stdout)
+
+    def lock(self, folder: str) -> None:
+        """chmod 000 a folder, restored before the temp dir is removed."""
+        os.chmod(folder, 0)
+        self.addCleanup(os.chmod, folder, 0o755)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads chmod 000")
+    def test_files_under_an_unlistable_folder_are_unreadable(self) -> None:
+        self.accept_baseline()
+        self.lock(self.skill_file("changelog-tidy", "scripts"))
+
+        result, report = self.diff_json()
+        self.assertEqual(1, result.returncode, str(result))
+        self.assertEqual(
+            [("unreadable", "skill:changelog-tidy", os.path.join("scripts", "run.py"))],
+            self.changes(report),
+        )
+        self.assertEqual(
+            [self.skill_file("changelog-tidy", "scripts")],
+            [entry["file"] for entry in report["unscanned"]],
+        )
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads chmod 000")
+    def test_files_of_an_unlistable_bundle_are_unreadable(self) -> None:
+        self.accept_baseline()
+        self.lock(self.skill_file("release-notes"))
+
+        result, report = self.diff_json()
+        self.assertEqual(1, result.returncode, str(result))
+        self.assertEqual(
+            [
+                ("unreadable", "skill:release-notes", "SKILL.md"),
+                ("unreadable", "skill:release-notes", os.path.join("scripts", "run.py")),
+            ],
+            self.changes(report),
+        )
+        self.assertNotIn("removed", self.diff().stdout)
+
+    def test_binary_and_too_large_files_are_compared_not_listed_as_unhashed(self) -> None:
+        binary = self.skill_file("release-notes", "logo.png")
+        large = self.skill_file("release-notes", "corpus.txt")
+        with open(binary, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n\x00\x00")
+        with open(large, "wb") as handle:
+            handle.write(b"a" * (MAX_FILE_BYTES + 10))
+        self.accept_baseline()
+
+        result = self.diff()
+        self.assertEqual(0, result.returncode, str(result))
+        self.assertIn("NOT-FULLY-ANALYZED (0)", result.stdout)
+        self.assertIn("Every discovered file was hashed and compared.", result.stdout)
+
+        with open(binary, "ab") as handle:
+            handle.write(b"\x00")
+        with open(large, "ab") as handle:
+            handle.write(b"b")
+        result, report = self.diff_json()
+        self.assertEqual(1, result.returncode, str(result))
+        self.assertEqual(
+            [
+                ("changed", "skill:release-notes", "corpus.txt"),
+                ("changed", "skill:release-notes", "logo.png"),
+            ],
+            self.changes(report),
+        )
+        self.assertEqual([], report["unscanned"])
+
+    def test_same_named_skills_at_different_paths_are_kept_apart(self) -> None:
+        project = os.path.join(self.tmp.name, "project")
+        project_skills = os.path.join(project, ".claude", "skills")
+        fixture_gen.build_clean_bundle(project_skills, "release-notes")
+        scope = ("--project", "--cwd", project)
+        self.accept_baseline(scope)
+        os.remove(self.skill_file("release-notes", "SKILL.md"))
+        fifo = os.path.join(project_skills, "release-notes", "SKILL.md")
+        os.remove(fifo)
+        os.mkfifo(fifo)
+
+        result, report = self.diff_json(scope)
+        self.assertEqual(1, result.returncode, str(result))
+        self.assertEqual(
+            {
+                ("removed", self.skill_file("release-notes")),
+                ("unreadable", os.path.join(project_skills, "release-notes")),
+            },
+            {(c["change"], c["path"]) for c in report["changes"]},
+        )
 
     def test_bundle_that_fails_to_load_is_unreadable_not_removed(self) -> None:
         self.accept_baseline()

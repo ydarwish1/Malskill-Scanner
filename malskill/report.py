@@ -486,7 +486,7 @@ def render_baseline_diff(
             "about them is implied by their absence from the changed list."
         )
     else:
-        lines.append("  Every discovered file was hashed in full.")
+        lines.append("  Every discovered file was hashed and compared.")
     return "\n".join(lines)
 
 

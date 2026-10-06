@@ -155,30 +155,34 @@ def save(home: str, targets: Dict[str, Dict[str, Any]]) -> str:
 
 
 def collect(
-    inventory, unscanned: Optional[List[Unscanned]] = None
+    inventory, unhashed: Optional[Dict[str, List[Unscanned]]] = None
 ) -> Dict[str, Dict[str, Any]]:
     """Load every target just far enough to hash its files.
 
-    When ``unscanned`` is a list, every file or target that could not be hashed is
-    appended to it, so a caller can report it instead of losing it.
+    When ``unhashed`` is a dict, every file, folder or target that could not be hashed
+    is recorded under its target key, so a caller can report it instead of losing it.
+    Binary and too-large files are hashed, so they are not recorded there.
     """
     snapshot: Dict[str, Dict[str, Any]] = {}
     for target in inventory.targets:
         try:
             target.load()
             snapshot[target.key] = snapshot_for(target)
-            if unscanned is not None:
-                unscanned.extend(target.unscanned())
+            if unhashed is not None:
+                hashes = target.file_hashes()
+                entries = [e for e in target.unscanned() if e.file not in hashes]
+                if entries:
+                    unhashed[target.key] = entries
         except Exception as exc:  # noqa: BLE001 - a target we cannot read is not recorded
-            if unscanned is not None:
-                unscanned.append(
+            if unhashed is not None:
+                unhashed[target.key] = [
                     Unscanned(
                         target=target.display,
                         file=target.path,
                         reason=REASON_UNREADABLE,
                         detail="target could not be loaded: %s" % exc,
                     )
-                )
+                ]
             continue
         finally:
             try:
@@ -371,15 +375,15 @@ class FileChange:
 def diff(
     snapshot: Dict[str, Dict[str, Any]],
     store: BaselineStore,
-    unscanned: List[Unscanned],
+    unhashed: Dict[str, List[Unscanned]],
 ) -> List[FileChange]:
     """Every file added, changed or removed since the accepted baseline.
 
     A whole target that appeared or disappeared lists each of its files; one with no
     hashable file at all is listed once as ``.``. A recorded file that is in
-    ``unscanned`` now is ``unreadable``, not ``removed``: it may still be there.
+    ``unhashed`` now, or sits under a folder that is, is ``unreadable``, not
+    ``removed``: it may still be there.
     """
-    unreadable = {(entry.target, entry.file) for entry in unscanned}
     changes: List[FileChange] = []
     for key in sorted(set(snapshot) | set(store.targets)):
         current = snapshot.get(key)
@@ -389,7 +393,7 @@ def diff(
         path = str(entry.get("path", key))
         old_files = (previous or {}).get("files") or {}
         new_files = (current or {}).get("files") or {}
-        target_unreadable = current is None and (display, path) in unreadable
+        unreadable = _unhashed_rels(path, unhashed.get(key, []))
         rels = sorted(set(old_files) | set(new_files))
         if not rels and (current is None or previous is None):
             rels = ["."]
@@ -400,9 +404,24 @@ def diff(
                 change = "changed"
             elif previous is None or rel in new_files:
                 change = "added"
-            elif target_unreadable or (display, rel) in unreadable:
+            elif _is_under(rel, unreadable):
                 change = "unreadable"
             else:
                 change = "removed"
             changes.append(FileChange(target=display, path=path, file=rel, change=change))
     return changes
+
+
+def _unhashed_rels(path: str, entries: List[Unscanned]) -> List[str]:
+    """Entries as paths relative to the target; a folder or target error is absolute."""
+    return [
+        os.path.relpath(entry.file, path) if os.path.isabs(entry.file) else entry.file
+        for entry in entries
+    ]
+
+
+def _is_under(rel: str, unreadable: List[str]) -> bool:
+    return any(
+        bad == os.curdir or rel == bad or rel.startswith(bad + os.sep)
+        for bad in unreadable
+    )
