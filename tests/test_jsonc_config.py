@@ -101,6 +101,19 @@ class StripJsoncTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 strip_jsonc(text)
 
+    def test_line_comment_ends_at_cr_or_lf(self) -> None:
+        for eol in ("\r", "\r\n", "\n"):
+            with self.subTest(eol=repr(eol)):
+                text = '{ // note' + eol + ' "a": 1,' + eol + '}'
+                stripped = strip_jsonc(text)
+                self.assertEqual({"a": 1}, json.loads(stripped))
+                self.assertEqual(text.count("\r"), stripped.count("\r"))
+
+    def test_unicode_line_separators_end_a_comment_and_stay_invalid(self) -> None:
+        for separator in ("\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)), self.assertRaises(ValueError):
+                json.loads(strip_jsonc('{ // note' + separator + ' "a": 1\n}'))
+
     def test_unterminated_string_stays_invalid(self) -> None:
         with self.assertRaises(ValueError):
             json.loads(strip_jsonc('{"a": "never closed // ,}'))
@@ -161,6 +174,22 @@ class JsoncConfigScanTests(unittest.TestCase):
         report = self.scan("--paths", bundle)
         self.assertIn("PIPE_TO_SHELL", harness.finding_ids(report), str(report))
 
+    def test_lone_cr_and_crlf_line_endings(self) -> None:
+        for eol in ("\r", "\r\n"):
+            with self.subTest(eol=repr(eol)):
+                _write(
+                    os.path.join(self.home, ".vscode", "mcp.json"),
+                    VSCODE_REMOTE_CODE_JSONC.replace("\n", eol),
+                )
+                self.assert_analyzed_and_flagged(self.scan("--all-clients"))
+
+    def test_unicode_line_separator_after_a_comment_is_not_fully_analyzed(self) -> None:
+        text = REMOTE_CODE_JSONC.replace("wiki\n", "wiki\u2028")
+        _write(os.path.join(self.home, ".claude.json"), text)
+        report = self.scan()
+        self.assertEqual(1, len(self.mcp_unscanned(report)), str(report))
+        self.assertNotEqual("CLEAN", harness.overall_status(report))
+
     def test_pinned_jsonc_config_is_clean(self) -> None:
         _write(os.path.join(self.home, ".claude.json"), PINNED_JSONC)
         report = self.scan()
@@ -184,10 +213,11 @@ class JsoncConfigScanTests(unittest.TestCase):
                 self.assertEqual("NOT-FULLY-ANALYZED", harness.overall_status(report))
                 self.assertEqual(0, report["exit"])
 
-    def test_huge_run_of_comment_openers_is_reported_not_hung(self) -> None:
-        _write(os.path.join(self.home, ".claude.json"), '{"a": 1}' + "/*" * 500000)
-        report = self.scan()
-        self.assertEqual(1, len(self.mcp_unscanned(report)), str(report))
+    def test_huge_unterminated_comment_is_reported_not_hung(self) -> None:
+        _write(os.path.join(self.home, ".claude.json"), '{"a": 1} /*' + "x" * 1000000)
+        rows = self.mcp_unscanned(self.scan())
+        self.assertEqual(1, len(rows))
+        self.assertIn("unterminated /* comment", rows[0]["detail"])
 
     def test_settings_json_with_comments_is_still_not_fully_analyzed(self) -> None:
         _write(
@@ -198,6 +228,17 @@ class JsoncConfigScanTests(unittest.TestCase):
         details = [entry.get("detail", "") for entry in harness.unscanned(report)]
         self.assertEqual(1, len(details), str(report))
         self.assertTrue(details[0].startswith("invalid JSON:"), details)
+
+    def test_bundle_settings_json_with_comments_is_still_not_fully_analyzed(self) -> None:
+        bundle = os.path.join(self.root, "notes")
+        _write(os.path.join(bundle, "SKILL.md"), SKILL)
+        settings = _write(
+            os.path.join(bundle, "settings.json"), '{\n  // my settings\n  "hooks": {}\n}\n'
+        )
+        report = self.scan("--paths", bundle)
+        rows = [entry for entry in harness.unscanned(report) if entry.get("file") == settings]
+        self.assertEqual(1, len(rows), str(report))
+        self.assertTrue(rows[0]["detail"].startswith("invalid JSON:"), rows)
 
     def test_through_the_bin_shim(self) -> None:
         _write(os.path.join(self.home, ".claude.json"), REMOTE_CODE_JSONC)

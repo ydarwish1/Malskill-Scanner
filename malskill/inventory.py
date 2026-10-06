@@ -59,13 +59,13 @@ _BUNDLE_MANIFESTS = (
     "agent.md",
 )
 
+_SETTINGS_FILENAMES = ("settings.json", "settings.local.json")
+
 _CONFIG_FILENAMES = (
     ".mcp.json",
     "mcp.json",
-    "settings.json",
-    "settings.local.json",
     "claude_desktop_config.json",
-)
+) + _SETTINGS_FILENAMES
 
 _EMBEDDED_SCAN_DEPTH = 3
 
@@ -112,9 +112,13 @@ def _read_text(path: str) -> Tuple[Optional[str], Optional[str]]:
 # Strings are matched first so a ``//`` or ``,}`` inside one is left alone. Each string
 # or comment also accepts end-of-text instead of its closing token, so a cut-short file is
 # still matched in one linear pass. A trailing comma counts only after a value, so ``{,}``
-# and ``[1,,]`` stay invalid.
+# and ``[1,,]`` stay invalid. A line comment ends at CR or LF, as in the JSONC parser
+# VS Code and Cursor use, and also at U+2028/U+2029, which are kept so strict JSON then
+# rejects the file: no client line break can hide text from the rules.
 _JSONC_STRING = r'"(?:\\.|[^"\\])*(?:"|\Z)'
-_JSONC_COMMENT_RE = re.compile(_JSONC_STRING + r"|//[^\n]*|/\*.*?(?:\*/|\Z)", re.S)
+_JSONC_COMMENT_RE = re.compile(
+    _JSONC_STRING + r"|//[^\r\n\u2028\u2029]*|/\*.*?(?:\*/|\Z)", re.S
+)
 _JSONC_TRAILING_COMMA_RE = re.compile(
     _JSONC_STRING + r"|(?<=[^\s{\[,:])\s*,(?=\s*[}\]])", re.S
 )
@@ -126,7 +130,7 @@ def _blank_jsonc_comment(match: re.Match[str]) -> str:
         return token
     if token.startswith("/*") and (len(token) < 4 or not token.endswith("*/")):
         raise ValueError("unterminated /* comment at char %d" % match.start())
-    return re.sub(r"[^\n]", " ", token)
+    return re.sub(r"[^\r\n]", " ", token)
 
 
 def _blank_trailing_comma(match: re.Match[str]) -> str:
@@ -137,7 +141,7 @@ def _blank_trailing_comma(match: re.Match[str]) -> str:
 def strip_jsonc(text: str) -> str:
     """Blank ``//`` and ``/* */`` comments and trailing commas out of JSONC text.
 
-    Blanked characters become spaces (newlines are kept), so offsets and line numbers in
+    Blanked characters become spaces (CR and LF are kept), so offsets and line numbers in
     a later ``json`` error still point at the original file. Raises ``ValueError`` on an
     unterminated block comment.
     """
@@ -584,7 +588,7 @@ def _scan_embedded_configs(root: str, inventory: Inventory) -> None:
             path = os.path.join(dirpath, filename)
             if not inventory.claim_config(path):
                 continue
-            config, error = _read_json(path, jsonc=True)
+            config, error = _read_json(path, jsonc=filename not in _SETTINGS_FILENAMES)
             if error is not None:
                 inventory.unscanned.append(
                     _unscanned(

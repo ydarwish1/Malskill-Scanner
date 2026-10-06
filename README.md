@@ -92,7 +92,7 @@ Exit codes: 0 no findings, 1 findings, 2 scanner error. `--fail-on LEVEL` (`low`
 ## Known limits
 
 - `--fail-on` judges each finding by its severity alone. `BASELINE_TAMPERED` is HIGH, so `--fail-on critical` exits 0 on a tampered baseline (the finding is still printed), and NOT-FULLY-ANALYZED never changes the exit code at any level.
-- JSONC is accepted only in MCP config files. A `settings.json` with comments is still reported as NOT-FULLY-ANALYZED, and comments in `~/.claude.json`, a project `.mcp.json` or a client config are dropped before the rules run, so text inside them is never matched. A config inside a `--paths` bundle is also scanned as a raw file, comments included.
+- JSONC is accepted only in MCP config files: `.mcp.json`, `mcp.json`, `*.mcp.json`, `claude_desktop_config.json` and `~/.claude.json` (including the hooks in its `projects` entries). A `settings.json` or `settings.local.json` with comments, at home, in a project or inside a bundle, is still reported as NOT-FULLY-ANALYZED. A `//` comment ends at CR or LF, as in the VS Code and Cursor parser; a U+2028 or U+2029 after one leaves the file NOT-FULLY-ANALYZED. Comments in `~/.claude.json`, a project `.mcp.json` or a client config are dropped before the rules run, so text inside them is never matched. A config inside a `--paths` bundle is also scanned as a raw file, comments included.
 
 ## Docs
 
