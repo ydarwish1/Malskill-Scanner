@@ -82,6 +82,7 @@ python3 eval/run_bench.py --out eval/BENCHMARK.md   # offline, about a second
 ./bin/malskill scan --paranoid     # include hits suppressed in docs/test context
 ./bin/malskill scan --explain      # add the zero-tool AI explainer
 ./bin/malskill scan --fail-on high # exit 1 only for HIGH or CRITICAL findings
+./bin/malskill scan --summary      # one line: state, findings per severity, files not fully analyzed
 ./bin/malskill list                # show what would be scanned, run no rules
 ./bin/malskill rules               # print every rule and what fires it
 ./bin/malskill baseline update     # accept current state
@@ -90,10 +91,19 @@ python3 eval/run_bench.py --out eval/BENCHMARK.md   # offline, about a second
 
 Exit codes: 0 no findings, 1 findings, 2 scanner error. `--fail-on LEVEL` (`low`, `medium`, `high` or `critical`) narrows exit 1 to findings at or above LEVEL; lower findings are still printed and still in `--json`, which also records the level as `fail_on`.
 
+`scan --summary` prints only one line, for CI logs and status bars, with the same exit code as the full report:
+
+```
+state: FLAGGED   critical: 0   high: 2   medium: 0   low: 0   not-fully-analyzed: 1
+```
+
+The counts are the `severity_counts` and the number of `unscanned` entries of the `--json` report, after baseline drift and `--explain` escalations. `--summary` cannot be combined with `--json`.
+
 `baseline diff` takes the same scope flags as `baseline update` (and `--json`) and lists every file `added`, `changed` or `removed` since the accepted baseline, plus `unreadable` for a recorded file that can no longer be hashed. It exits 0 when nothing changed, 1 when something did, and 2 when there is no baseline or it fails its self-checksum. File names are shown with invisible unicode escaped and URLs defanged, as in the scan report.
 
 ## Known limits
 
+- `scan --summary` prints no file names, notes or explainer output, and ignores `--show-unscanned`; run the scan without it, or with `--json`, to see which findings and files the counts are made of.
 - `--fail-on` judges each finding by its severity alone. `BASELINE_TAMPERED` is HIGH, so `--fail-on critical` exits 0 on a tampered baseline (the finding is still printed), and NOT-FULLY-ANALYZED never changes the exit code at any level.
 - JSONC is accepted only in MCP config files: `.mcp.json`, `mcp.json`, `*.mcp.json`, `claude_desktop_config.json` and `~/.claude.json` (including the hooks in its `projects` entries). A `settings.json` or `settings.local.json` with comments, at home, in a project or inside a bundle, is still reported as NOT-FULLY-ANALYZED. A `//` comment ends at CR or LF, as in the VS Code and Cursor parser; a U+2028 or U+2029 after one leaves the file NOT-FULLY-ANALYZED. Comments in `~/.claude.json`, a project `.mcp.json` or a client config are dropped before the rules run, so text inside them is never matched. A config inside a `--paths` bundle is also scanned as a raw file, comments included.
 - `baseline diff` compares against whatever scope the baseline was accepted with: run it with the same `--home`, `--paths`, `--project` and `--all-clients` flags, or targets outside the current scope show as removed. The baseline records only the first 5000 files of a bundle in sorted order, so a bigger bundle is compared up to the last file both the baseline and the current state hold, and the rest is listed under NOT-FULLY-ANALYZED. The baseline records hashes only, so a file that appeared but cannot be hashed (a FIFO, an unreadable file, a symlink leaving the bundle, a vendored `.git` or `node_modules`) is listed under NOT-FULLY-ANALYZED and does not change the exit code. Binary files and files over 2 MiB are still hashed and compared, so `baseline diff` does not list them; a file over 64 MiB is compared by its first 64 MiB only.
