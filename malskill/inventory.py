@@ -44,6 +44,7 @@ except ImportError:  # Python 3.9 and 3.10: parse_toml_subset below is used inst
     tomllib = None  # type: ignore[assignment]
 
 from malskill.rules import REASON_PARSE_ERROR, REASON_UNREADABLE, Unscanned
+from malskill.sanitize import for_display
 from malskill.targets import (
     MAX_FILE_BYTES,
     SKIP_DIRNAMES,
@@ -105,12 +106,18 @@ class DiscoveryOptions:
 
 
 def _read_text(path: str) -> Tuple[Optional[str], Optional[str]]:
-    """Read a file as text. Returns (text, error)."""
+    """Read a file as text. Returns (text, error).
+
+    A file over MAX_FILE_BYTES is an error, never a parsed prefix: TOML has no closing
+    delimiter, so padding could push a server past the cut and out of the scan.
+    """
     try:
         with open(path, "rb") as handle:
-            data = handle.read(MAX_FILE_BYTES)
+            data = handle.read(MAX_FILE_BYTES + 1)
     except OSError as exc:
         return None, str(exc)
+    if len(data) > MAX_FILE_BYTES:
+        return None, "larger than %d bytes; not parsed" % MAX_FILE_BYTES
     return data.decode("utf-8", errors="replace"), None
 
 
@@ -200,8 +207,9 @@ def _line_of_snippet(path: str, snippet: str) -> Optional[int]:
 def _parse_codex_toml(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Parse with ``tomllib`` when the running Python has it, else the subset below.
 
-    Returns (data, error). Pathological nesting raises RecursionError in either parser and
-    is reported like any other parse failure.
+    Returns (data, error). Deep nesting can raise RecursionError in ``tomllib`` and is
+    reported like any other parse failure. Error messages can quote keys from the file,
+    so they are sanitised like any other file content.
     """
     if tomllib is None:
         parse, label = parse_toml_subset, "TOML outside the supported subset"
@@ -210,11 +218,13 @@ def _parse_codex_toml(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str
     try:
         return parse(text), None
     except (ValueError, RecursionError) as exc:
-        return None, "%s (%s)" % (label, exc)
+        return None, "%s (%s)" % (label, for_display(str(exc)))
 
 
 _TOML_TABLE_RE = re.compile(r"^\s*\[\[?([^\]]+)\]\]?\s*$")
 _TOML_KV_RE = re.compile(r"^\s*([A-Za-z0-9_.\"'-]+)\s*=\s*(.+?)\s*$")
+# Real configs nest a few levels; the cap keeps hostile nesting linear and recursion-free.
+_TOML_MAX_DEPTH = 32
 
 
 def parse_toml_subset(text: str) -> Dict[str, Any]:
@@ -243,10 +253,7 @@ def parse_toml_subset(text: str) -> Dict[str, Any]:
         kv = _TOML_KV_RE.match(line)
         if not kv:
             raise ValueError("unsupported line: %s" % line[:60])
-        key = _split_toml_key(kv.group(1))
-        if len(key) != 1:
-            raise ValueError("dotted keys are not supported: %s" % line[:60])
-        current[key[0]] = _toml_value(kv.group(2))
+        current[_toml_key(kv.group(1))] = _toml_value(kv.group(2))
     return root
 
 
@@ -269,6 +276,13 @@ def _split_toml_key(key: str) -> List[str]:
             current.append(ch)
     parts.append("".join(current).strip())
     return [p for p in parts if p]
+
+
+def _toml_key(key: str) -> str:
+    parts = _split_toml_key(key)
+    if len(parts) != 1:
+        raise ValueError("dotted or empty keys are not supported")
+    return parts[0]
 
 
 def _toml_value(token: str) -> Any:
@@ -297,7 +311,7 @@ def _toml_value(token: str) -> Any:
             if not part.strip():
                 continue
             key, _, value = part.partition("=")
-            table[key.strip().strip("\"'")] = _toml_value(value)
+            table[_toml_key(key)] = _toml_value(value)
         return table
     lowered = token.lower()
     if lowered in ("true", "false"):
@@ -329,6 +343,8 @@ def _split_top_level(text: str) -> List[str]:
             current.append(ch)
         elif ch in "[{":
             depth += 1
+            if depth > _TOML_MAX_DEPTH:
+                raise ValueError("nested deeper than %d levels" % _TOML_MAX_DEPTH)
             current.append(ch)
         elif ch in "]}":
             depth -= 1
