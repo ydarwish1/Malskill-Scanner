@@ -1,7 +1,7 @@
 """Command line interface.
 
     malskill scan [--home DIR] [--paths DIR ...] [--project] [--all-clients]
-                  [--json | --summary] [--show-unscanned] [--paranoid] [--explain]
+                  [--json | --summary | --markdown] [--show-unscanned] [--paranoid] [--explain]
                   [--no-baseline] [--fail-on LEVEL]
     malskill baseline update [--home DIR] [--paths DIR ...]
     malskill baseline diff [--home DIR] [--paths DIR ...] [--json]
@@ -121,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print one line: the report state, findings per severity and the number "
         "of files not fully analyzed",
+    )
+    output.add_argument(
+        "--markdown",
+        action="store_true",
+        help="print the report as Markdown for a pull request comment, sanitised like "
+        "the terminal report",
     )
     scan.add_argument(
         "--show-unscanned",
@@ -271,6 +277,8 @@ def cmd_scan(args: argparse.Namespace, stdout) -> int:
         stdout.write(report.to_json() + "\n")
     elif args.summary:
         stdout.write(report.render_summary() + "\n")
+    elif args.markdown:
+        stdout.write(report.render_markdown(show_unscanned=args.show_unscanned) + "\n")
     else:
         stdout.write(report.render_terminal(show_unscanned=args.show_unscanned) + "\n")
     return report.exit_code()

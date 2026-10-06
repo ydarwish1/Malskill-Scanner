@@ -7,6 +7,6 @@ Each step is one small pull request with tests and README updates. Stdlib only, 
 - [x] 3. Read `~/.codex/config.toml` with `tomllib` when the running Python has it (3.11+), and keep the current subset parser for Python 3.9 and 3.10.
 - [x] 4. Add `baseline diff`: list the files added, changed or removed since the accepted baseline, without running any rule. Exit 0 when nothing changed, 1 when something did.
 - [x] 5. Add `scan --summary`: print one line with the report state, the number of findings per severity, and the number of files not fully analyzed.
-- [ ] 6. Add `scan --markdown`: print the report as Markdown fit for a pull request comment, sanitised exactly like the terminal report (invisible unicode escaped, URLs defanged).
+- [x] 6. Add `scan --markdown`: print the report as Markdown fit for a pull request comment, sanitised exactly like the terminal report (invisible unicode escaped, URLs defanged).
 - [ ] 7. Add `scan --sarif`: print the findings as SARIF 2.1.0 for GitHub code scanning, with one rule per finding ID, its level, and each finding's file and line.
 - [ ] 8. Add a "Use in CI" section to the README with a GitHub Actions example that runs `scan --paths` on a skills repository with `--fail-on high` and uploads the SARIF.
