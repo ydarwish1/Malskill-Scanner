@@ -19,6 +19,7 @@ harness`). Each module also adds its own directory, so single-file runs work.
 | `test_benign_zero_findings.py` | the bar: a known-benign corpus produces zero findings. |
 | `test_malicious_each_rule.py` | parameterised over every fixture, the named rule must fire. |
 | `test_baseline.py` | drift, new target and tampering, driven as state transitions. |
+| `test_baseline_diff.py` | `baseline diff`: added, changed and removed files and bundles, no rules run, no baseline or a tampered one exits 2, FIFOs reported as unreadable rather than removed or dropped, file names escaped and defanged in text and `--json`. |
 | `test_report_json.py` | three report states, `--json` round-trip, defanging, exit codes, never "SAFE". |
 | `test_cli.py` | `--help`, `rules`, `list`, exit codes, the `bin/malskill` shim. |
 | `test_fail_on.py` | `scan --fail-on LEVEL`: every threshold against every severity, lower findings still reported, usage errors. |

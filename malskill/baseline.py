@@ -18,6 +18,9 @@ Findings:
   but named, so an install can never land silently.
 * ``BASELINE_TAMPERED`` [HIGH] — the store's self-checksum does not match.
 
+``baseline diff`` uses :func:`diff` to list every file added, changed or removed since
+the accepted baseline, without running a rule.
+
 Nothing here ever runs on the *first* scan: with no accepted baseline there is nothing to
 compare against, and flagging every installed bundle as "new" on day one would be noise,
 not signal. The report says so explicitly instead.
@@ -33,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from malskill import __version__
-from malskill.rules import Finding, make_finding
+from malskill.rules import REASON_UNREADABLE, Finding, Unscanned, make_finding
 from malskill.sanitize import for_display
 
 __all__ = [
@@ -44,6 +47,8 @@ __all__ = [
     "save",
     "collect",
     "check",
+    "FileChange",
+    "diff",
 ]
 
 BASELINE_VERSION = 1
@@ -149,14 +154,31 @@ def save(home: str, targets: Dict[str, Dict[str, Any]]) -> str:
     return path
 
 
-def collect(inventory) -> Dict[str, Dict[str, Any]]:
-    """Load every target just far enough to hash its files."""
+def collect(
+    inventory, unscanned: Optional[List[Unscanned]] = None
+) -> Dict[str, Dict[str, Any]]:
+    """Load every target just far enough to hash its files.
+
+    When ``unscanned`` is a list, every file or target that could not be hashed is
+    appended to it, so a caller can report it instead of losing it.
+    """
     snapshot: Dict[str, Dict[str, Any]] = {}
     for target in inventory.targets:
         try:
             target.load()
             snapshot[target.key] = snapshot_for(target)
-        except Exception:  # noqa: BLE001 - a target we cannot read is simply not recorded
+            if unscanned is not None:
+                unscanned.extend(target.unscanned())
+        except Exception as exc:  # noqa: BLE001 - a target we cannot read is not recorded
+            if unscanned is not None:
+                unscanned.append(
+                    Unscanned(
+                        target=target.display,
+                        file=target.path,
+                        reason=REASON_UNREADABLE,
+                        detail="target could not be loaded: %s" % exc,
+                    )
+                )
             continue
         finally:
             try:
@@ -324,3 +346,63 @@ def _drift_finding(
             "only after you have read the change." % rel
         ),
     )
+
+
+@dataclass
+class FileChange:
+    """One file that differs from the accepted baseline."""
+
+    target: str
+    path: str
+    file: str
+    #: ``added``, ``changed``, ``removed`` or ``unreadable`` (recorded, but could not
+    #: be hashed this time, so it cannot be compared).
+    change: str
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "target": for_display(self.target),
+            "path": for_display(self.path),
+            "file": for_display(self.file),
+            "change": self.change,
+        }
+
+
+def diff(
+    snapshot: Dict[str, Dict[str, Any]],
+    store: BaselineStore,
+    unscanned: List[Unscanned],
+) -> List[FileChange]:
+    """Every file added, changed or removed since the accepted baseline.
+
+    A whole target that appeared or disappeared lists each of its files; one with no
+    hashable file at all is listed once as ``.``. A recorded file that is in
+    ``unscanned`` now is ``unreadable``, not ``removed``: it may still be there.
+    """
+    unreadable = {(entry.target, entry.file) for entry in unscanned}
+    changes: List[FileChange] = []
+    for key in sorted(set(snapshot) | set(store.targets)):
+        current = snapshot.get(key)
+        previous = store.get(key)
+        entry = current if current is not None else previous
+        display = "%s:%s" % (entry.get("kind", "target"), entry.get("name", key))
+        path = str(entry.get("path", key))
+        old_files = (previous or {}).get("files") or {}
+        new_files = (current or {}).get("files") or {}
+        target_unreadable = current is None and (display, path) in unreadable
+        rels = sorted(set(old_files) | set(new_files))
+        if not rels and (current is None or previous is None):
+            rels = ["."]
+        for rel in rels:
+            if rel in old_files and rel in new_files:
+                if old_files[rel] == new_files[rel]:
+                    continue
+                change = "changed"
+            elif previous is None or rel in new_files:
+                change = "added"
+            elif target_unreadable or (display, rel) in unreadable:
+                change = "unreadable"
+            else:
+                change = "removed"
+            changes.append(FileChange(target=display, path=path, file=rel, change=change))
+    return changes
