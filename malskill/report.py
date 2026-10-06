@@ -14,7 +14,8 @@ The output contract, in order of importance:
    floor from the registry.
 
 Exit codes: ``0`` no findings, ``1`` at least one finding, ``2`` scanner error.
-NOT-FULLY-ANALYZED on its own still exits 0 — and is still printed.
+NOT-FULLY-ANALYZED on its own still exits 0 — and is still printed. With ``fail_on``
+set, only findings at or above that severity exit 1; lower ones are still printed.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ class Report:
     scope: Dict[str, Any] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     explainer_note: Optional[str] = None
+    fail_on: Optional[Severity] = None
     generated_at: str = field(
         default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S%z")
     )
@@ -109,8 +111,14 @@ class Report:
             if state == STATE_FLAGGED
         )
 
+    def failing_findings(self) -> List[Finding]:
+        """Findings that decide the exit code: all of them, or those at/above ``fail_on``."""
+        if self.fail_on is None:
+            return self.findings
+        return [f for f in self.findings if f.severity.rank >= self.fail_on.rank]
+
     def exit_code(self) -> int:
-        return EXIT_FINDINGS if self.findings else EXIT_OK
+        return EXIT_FINDINGS if self.failing_findings() else EXIT_OK
 
     # -- rendering ---------------------------------------------------------------------
     def to_dict(self) -> Dict[str, Any]:
@@ -137,6 +145,7 @@ class Report:
             ],
             "notes": list(self.result.notes) + list(self.notes),
             "explainer": self.explainer_note,
+            "fail_on": self.fail_on.value if self.fail_on is not None else None,
             "exit_code": self.exit_code(),
         }
 
@@ -247,10 +256,15 @@ class Report:
                 lines.append("  - %s" % for_display(note, 400))
 
         lines.append("")
-        lines.append(
-            "state: %s   findings: %d   not-fully-analyzed: %d   exit: %d"
-            % (self.state, len(self.findings), len(self.unscanned), self.exit_code())
+        footer = "state: %s   findings: %d   not-fully-analyzed: %d   exit: %d" % (
+            self.state,
+            len(self.findings),
+            len(self.unscanned),
+            self.exit_code(),
         )
+        if self.fail_on is not None:
+            footer += "   fail-on: %s" % self.fail_on.value
+        lines.append(footer)
         return "\n".join(lines)
 
 

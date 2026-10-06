@@ -2,6 +2,7 @@
 
     malskill scan [--home DIR] [--paths DIR ...] [--project] [--all-clients]
                   [--json] [--show-unscanned] [--paranoid] [--explain] [--no-baseline]
+                  [--fail-on LEVEL]
     malskill baseline update [--home DIR] [--paths DIR ...]
     malskill list [--home DIR]
     malskill rules
@@ -16,6 +17,7 @@ fixtures/benign`` means exactly what it says and cannot be polluted by whatever 
 installed on the machine running it.
 
 Exit codes: 0 = no findings, 1 = at least one finding, 2 = scanner error.
+``scan --fail-on LEVEL`` narrows exit 1 to findings at or above LEVEL.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from malskill.report import (
     render_inventory,
     render_rules_table,
 )
+from malskill.rules import SEVERITY_ORDER, Severity
 from malskill.rules.engine import run as run_rules
 
 __all__ = ["main", "build_parser"]
@@ -47,7 +50,8 @@ _DESCRIPTION = (
 _EPILOG = (
     "Report states: FLAGGED / CLEAN / NOT-FULLY-ANALYZED. The scanner never reports that "
     "anything is guaranteed harmless.\n"
-    "Exit codes: 0 = no findings, 1 = findings, 2 = scanner error."
+    "Exit codes: 0 = no findings, 1 = findings (at or above --fail-on LEVEL when given), "
+    "2 = scanner error."
 )
 
 
@@ -127,6 +131,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-baseline",
         action="store_true",
         help="skip baseline drift comparison for this run",
+    )
+    scan.add_argument(
+        "--fail-on",
+        metavar="LEVEL",
+        type=str.lower,
+        default="",
+        choices=[severity.value.lower() for severity in reversed(SEVERITY_ORDER)],
+        help="exit 1 only when a finding at or above LEVEL exists (low, medium, high, "
+        "critical); lower findings are still printed",
     )
     scan.add_argument(
         "--explainer-binary",
@@ -229,6 +242,7 @@ def cmd_scan(args: argparse.Namespace, stdout) -> int:
         scope=_scope(options, args),
         notes=notes,
         explainer_note=explainer_note,
+        fail_on=Severity.parse(args.fail_on),
     )
     if args.json:
         stdout.write(report.to_json() + "\n")
