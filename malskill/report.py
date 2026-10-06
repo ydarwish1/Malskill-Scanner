@@ -24,7 +24,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from malskill import __version__
 from malskill.rules import REGISTRY, SEVERITY_ORDER, Finding, Severity, Unscanned
@@ -227,13 +227,21 @@ class Report:
             footer += "   fail-on: %s" % self.fail_on.value
         return footer
 
-    def render_terminal(self, *, show_unscanned: bool = False) -> str:
-        lines: List[str] = [self._headline()]
+    def _scope_bits(self, wrap: Callable[[str], str] = str) -> List[str]:
+        """``home=`` and ``paths=`` for the scope line, each path sanitised, then wrapped."""
         scope_bits = []
         if self.scope.get("home"):
-            scope_bits.append("home=%s" % self.scope["home"])
+            scope_bits.append("home=%s" % wrap(for_display(self.scope["home"], 0)))
         if self.scope.get("paths"):
-            scope_bits.append("paths=%s" % ", ".join(self.scope["paths"]))
+            scope_bits.append(
+                "paths=%s"
+                % ", ".join(wrap(for_display(path, 0)) for path in self.scope["paths"])
+            )
+        return scope_bits
+
+    def render_terminal(self, *, show_unscanned: bool = False) -> str:
+        lines: List[str] = [self._headline()]
+        scope_bits = self._scope_bits()
         if scope_bits:
             lines.append("scope: %s" % "  ".join(scope_bits))
         lines.append("")
@@ -261,7 +269,7 @@ class Report:
                     lines.append(
                         "    %-22s %s  (%s%s)"
                         % (
-                            entry.target,
+                            for_display(entry.target, 120),
                             for_display(entry.file, 120),
                             entry.reason,
                             ": " + for_display(entry.detail, 120)
@@ -296,14 +304,7 @@ class Report:
         links and @mentions in a file name or a piece of evidence render as plain text.
         """
         lines: List[str] = ["## %s" % self._headline(), ""]
-        scope_bits = []
-        if self.scope.get("home"):
-            scope_bits.append("home=%s" % _md_code(for_display(self.scope["home"], 0)))
-        if self.scope.get("paths"):
-            scope_bits.append(
-                "paths=%s"
-                % ", ".join(_md_code(for_display(path, 0)) for path in self.scope["paths"])
-            )
+        scope_bits = self._scope_bits(_md_code)
         if scope_bits:
             lines.extend(["scope: %s" % "  ".join(scope_bits), ""])
 
@@ -409,7 +410,7 @@ def _render_finding(finding: Finding) -> List[str]:
     header = "  [%s] %-28s %s" % (
         finding.severity.value,
         finding.id,
-        finding.target,
+        for_display(finding.target, 120),
     )
     if location:
         header += "  %s" % for_display(location, 120)
@@ -504,18 +505,20 @@ def render_inventory(inventory, *, as_json: bool = False) -> str:
         targets = by_kind[kind]
         lines.append("%s (%d)" % (kind, len(targets)))
         for target in sorted(targets, key=lambda t: t.name):
-            lines.append("  %-42s %s" % (target.name, for_display(target.path, 120)))
+            lines.append(
+                "  %-42s %s" % (for_display(target.name, 120), for_display(target.path, 120))
+            )
         lines.append("")
     if inventory.unscanned:
         lines.append("NOT-FULLY-ANALYZED (%d)" % len(inventory.unscanned))
         for entry in inventory.unscanned:
             lines.append(
                 "  %-30s %s (%s)"
-                % (entry.target, for_display(entry.file, 100), entry.reason)
+                % (for_display(entry.target, 120), for_display(entry.file, 100), entry.reason)
             )
         lines.append("")
     for note in inventory.notes:
-        lines.append("note: %s" % note)
+        lines.append("note: %s" % for_display(note, 400))
     lines.append(
         "%d target(s) discovered. Run 'malskill scan' to apply the rules."
         % len(inventory.targets)
