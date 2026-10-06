@@ -21,6 +21,7 @@ harness`). Each module also adds its own directory, so single-file runs work.
 | `test_baseline.py` | drift, new target and tampering, driven as state transitions. |
 | `test_report_json.py` | three report states, `--json` round-trip, defanging, exit codes, never "SAFE". |
 | `test_cli.py` | `--help`, `rules`, `list`, exit codes, the `bin/malskill` shim. |
+| `test_fail_on.py` | `scan --fail-on LEVEL`: every threshold against every severity, lower findings still reported, usage errors. |
 | `test_registry_coverage.py` | exhaustiveness gate: every ID in `REGISTRY` has a covering fixture. |
 | `test_explainer_escalate_only.py` | the AI may only escalate, never clear, downgrade or drop a finding. |
 | `test_paths_layouts.py` | `--paths` on a whole repo: nested skills and plugins are split into separate bundles, built from fixtures. |

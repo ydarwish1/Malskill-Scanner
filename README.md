@@ -81,12 +81,17 @@ python3 eval/run_bench.py --out eval/BENCHMARK.md   # offline, about a second
 ./bin/malskill scan --paths DIR    # audit a bundle, or a whole repo before installing from it
 ./bin/malskill scan --paranoid     # include hits suppressed in docs/test context
 ./bin/malskill scan --explain      # add the zero-tool AI explainer
+./bin/malskill scan --fail-on high # exit 1 only for HIGH or CRITICAL findings
 ./bin/malskill list                # show what would be scanned, run no rules
 ./bin/malskill rules               # print every rule and what fires it
 ./bin/malskill baseline update     # accept current state
 ```
 
-Exit codes: 0 no findings, 1 findings, 2 scanner error.
+Exit codes: 0 no findings, 1 findings, 2 scanner error. `--fail-on LEVEL` (`low`, `medium`, `high` or `critical`) narrows exit 1 to findings at or above LEVEL; lower findings are still printed and still in `--json`, which also records the level as `fail_on`.
+
+## Known limits
+
+- `--fail-on` judges each finding by its severity alone. `BASELINE_TAMPERED` is HIGH, so `--fail-on critical` exits 0 on a tampered baseline (the finding is still printed), and NOT-FULLY-ANALYZED never changes the exit code at any level.
 
 ## Docs
 
