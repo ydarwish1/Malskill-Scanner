@@ -1,0 +1,71 @@
+{
+  "categories": [
+    {
+      "key": "step",
+      "title": "Roadmap step",
+      "weight": 30,
+      "criteria": [
+        "Implements exactly the ROADMAP.md step named in the pull request title, and ticks its box in the same change",
+        "Every behaviour the step describes works through ./bin/malskill, not only inside a helper",
+        "Nothing the step asks for is missing, stubbed or left as a TODO"
+      ]
+    },
+    {
+      "key": "safety",
+      "title": "Detection safety",
+      "weight": 25,
+      "criteria": [
+        "Detection never gets weaker: no rule, pattern, fixture or test is removed, loosened or skipped, every malicious fixture still fires its rule, and the benign corpus still has zero findings",
+        "Rules still run on raw bytes; any file content shown to the user (terminal, Markdown, SARIF, JSON) is sanitised the same way: invisible unicode escaped, URLs defanged",
+        "No new subprocess outside malskill/explain.py, no network access, and no new path where a file the scanner could not read is dropped instead of reported as NOT-FULLY-ANALYZED"
+      ]
+    },
+    {
+      "key": "correctness",
+      "title": "Correctness",
+      "weight": 15,
+      "criteria": [
+        "Exit codes hold: 0 no findings, 1 findings, 2 scanner error, unless the step changes them on purpose and says so",
+        "Every machine-readable output the change touches is valid (JSON parses, SARIF matches 2.1.0) and is tested",
+        "Odd input is handled without a crash: empty, unreadable or huge files, bad encodings, symlinks"
+      ]
+    },
+    {
+      "key": "tests",
+      "title": "Tests",
+      "weight": 20,
+      "criteria": [
+        "python3 -m unittest discover -s tests passes, and every new behaviour has a test in tests/",
+        "Tests cover real edge cases, not only the happy path, and fixtures needing special bytes (zero-width unicode, symlinks) are generated at test time",
+        "Tests use temporary directories and fixtures, never the developer's real home directory or the network"
+      ]
+    },
+    {
+      "key": "quality",
+      "title": "Code quality and docs",
+      "weight": 10,
+      "criteria": [
+        "Standard library only (no pip install, no yaml import), and it still runs on Python 3.9",
+        "Matches the code's existing style: small functions, the same naming, no dead code or duplicate helpers",
+        "README Commands section and docs/RULES.md or tests/README.md change where behaviour changed"
+      ]
+    }
+  ],
+  "protected": [
+    ".github/",
+    ".claude/",
+    ".forge/",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "CODEOWNERS",
+    "LICENSE",
+    "bin/malskill",
+    "malskill/rules/",
+    "fixtures/malicious/",
+    "tests/test_benign_zero_findings.py",
+    "tests/test_malicious_each_rule.py",
+    "tests/test_registry_coverage.py",
+    "tests/test_hygiene.py",
+    "eval/corpora.json"
+  ]
+}
