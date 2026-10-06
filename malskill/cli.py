@@ -1,8 +1,8 @@
 """Command line interface.
 
     malskill scan [--home DIR] [--paths DIR ...] [--project] [--all-clients]
-                  [--json] [--show-unscanned] [--paranoid] [--explain] [--no-baseline]
-                  [--fail-on LEVEL]
+                  [--json | --summary] [--show-unscanned] [--paranoid] [--explain]
+                  [--no-baseline] [--fail-on LEVEL]
     malskill baseline update [--home DIR] [--paths DIR ...]
     malskill baseline diff [--home DIR] [--paths DIR ...] [--json]
     malskill list [--home DIR]
@@ -114,7 +114,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run every deterministic rule over the discovered inventory.",
     )
     _add_scope_args(scan)
-    scan.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    output = scan.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    output.add_argument(
+        "--summary",
+        action="store_true",
+        help="print one line: the report state, findings per severity and the number "
+        "of files not fully analyzed",
+    )
     scan.add_argument(
         "--show-unscanned",
         action="store_true",
@@ -262,6 +269,8 @@ def cmd_scan(args: argparse.Namespace, stdout) -> int:
     )
     if args.json:
         stdout.write(report.to_json() + "\n")
+    elif args.summary:
+        stdout.write(report.render_summary() + "\n")
     else:
         stdout.write(report.render_terminal(show_unscanned=args.show_unscanned) + "\n")
     return report.exit_code()

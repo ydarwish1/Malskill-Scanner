@@ -23,6 +23,7 @@ harness`). Each module also adds its own directory, so single-file runs work.
 | `test_report_json.py` | three report states, `--json` round-trip, defanging, exit codes, never "SAFE". |
 | `test_cli.py` | `--help`, `rules`, `list`, exit codes, the `bin/malskill` shim. |
 | `test_fail_on.py` | `scan --fail-on LEVEL`: every threshold against every severity, lower findings still reported, usage errors. |
+| `test_summary.py` | `scan --summary`: one line whose state and counts match `--json` for flagged, clean, empty, missing, unreadable, binary and oversized input, LOW findings with `--fail-on`, baseline drift, zero-width content kept off the line, `--json --summary` a usage error. |
 | `test_jsonc_config.py` | MCP configs written as JSONC are analyzed in every location, with LF, CR or CRLF line endings; still-invalid ones and `settings.json` with comments stay NOT-FULLY-ANALYZED. |
 | `test_codex_toml.py` | `~/.codex/config.toml` through `tomllib` on 3.11+ and the subset parser (also forced in process); multi-line arrays, dotted keys (also in inline tables), dates, invalid or deeply nested TOML, bad UTF-8, the 2 MiB size cap, sanitised error details in `--json`. |
 | `test_registry_coverage.py` | exhaustiveness gate: every ID in `REGISTRY` has a covering fixture. |

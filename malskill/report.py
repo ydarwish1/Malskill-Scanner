@@ -168,6 +168,17 @@ class Report:
             summary[entry.rule_id] = summary.get(entry.rule_id, 0) + 1
         return summary
 
+    def render_summary(self) -> str:
+        """One line: the state, findings per severity and files not fully analyzed."""
+        counts = self.severity_counts()
+        fields = ["state: %s" % self.state]
+        fields.extend(
+            "%s: %d" % (severity.value.lower(), counts[severity.value])
+            for severity in SEVERITY_ORDER
+        )
+        fields.append("not-fully-analyzed: %d" % len(self.unscanned))
+        return "   ".join(fields)
+
     def render_terminal(self, *, show_unscanned: bool = False) -> str:
         lines: List[str] = []
         stats = self.result.stats
