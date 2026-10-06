@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from malskill import __version__
 from malskill.rules import REGISTRY, SEVERITY_ORDER, Finding, Severity, Unscanned
@@ -37,6 +37,8 @@ __all__ = [
     "EXIT_ERROR",
     "render_rules_table",
     "render_inventory",
+    "baseline_diff_state",
+    "render_baseline_diff",
 ]
 
 EXIT_OK = 0
@@ -387,3 +389,109 @@ def render_inventory(inventory, *, as_json: bool = False) -> str:
         % len(inventory.targets)
     )
     return "\n".join(lines)
+
+
+def baseline_diff_state(store, changes: List[Any]) -> Tuple[str, int]:
+    """(state, exit code) for ``baseline diff``: nothing to compare against is exit 2."""
+    if not store.exists:
+        return "NO-BASELINE", EXIT_ERROR
+    if store.tampered:
+        return "TAMPERED", EXIT_ERROR
+    if changes:
+        return "CHANGED", EXIT_FINDINGS
+    return "UNCHANGED", EXIT_OK
+
+
+def render_baseline_diff(
+    store,
+    changes: List[Any],
+    unscanned: List[Unscanned],
+    *,
+    targets: int,
+    as_json: bool = False,
+) -> str:
+    state, exit_code = baseline_diff_state(store, changes)
+    counts = {kind: 0 for kind in ("added", "changed", "removed", "unreadable")}
+    for change in changes:
+        counts[change.change] += 1
+    if as_json:
+        payload = {
+            "tool": "malskill",
+            "tool_version": __version__,
+            "baseline": store.path,
+            "updated": store.updated,
+            "state": state,
+            "error": for_display(store.error) if store.error else None,
+            "targets": targets,
+            "counts": counts,
+            "changes": [change.to_dict() for change in changes],
+            "unscanned": [_unscanned_for_display(entry) for entry in unscanned],
+            "exit_code": exit_code,
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
+    if state == "NO-BASELINE":
+        return (
+            "NO-BASELINE: nothing recorded at %s. Run 'malskill baseline update' once "
+            "you have reviewed what is installed." % store.path
+        )
+    if state == "TAMPERED":
+        return "BASELINE_TAMPERED: %s (%s). Nothing was compared." % (
+            store.path,
+            for_display(store.error or "checksum mismatch"),
+        )
+    lines = [
+        "MalSkill Scanner v%s — baseline diff, no rules were run" % __version__,
+        "baseline: %s (written %s)" % (store.path, store.updated or "unknown date"),
+        "",
+    ]
+    if changes:
+        lines.append(
+            "CHANGED (%d)  [%s]"
+            % (
+                len(changes),
+                ", ".join("%d %s" % (n, kind) for kind, n in counts.items() if n),
+            )
+        )
+        for change in changes:
+            lines.append(
+                "  %-10s %-30s %s"
+                % (
+                    change.change,
+                    for_display(change.target, 120),
+                    for_display(change.file, 200),
+                )
+            )
+    else:
+        lines.append("UNCHANGED")
+        lines.append(
+            "  No file added, changed or removed across %d target(s)." % targets
+        )
+    lines.append("")
+    lines.append("NOT-FULLY-ANALYZED (%d)" % len(unscanned))
+    if unscanned:
+        for entry in unscanned:
+            shown = _unscanned_for_display(entry)
+            lines.append(
+                "  %-30s %s  (%s%s)"
+                % (
+                    shown["target"],
+                    shown["file"],
+                    shown["reason"],
+                    ": " + shown["detail"] if shown["detail"] else "",
+                )
+            )
+        lines.append(
+            "  These files could not be hashed, so they were not compared. Nothing "
+            "about them is implied by their absence from the changed list."
+        )
+    else:
+        lines.append("  Every discovered file was hashed and compared.")
+    return "\n".join(lines)
+
+
+def _unscanned_for_display(entry: Unscanned) -> Dict[str, Any]:
+    shown = entry.to_dict()
+    for key in ("target", "file", "detail"):
+        shown[key] = for_display(shown[key] or "", 200)
+    return shown

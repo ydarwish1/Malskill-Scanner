@@ -4,6 +4,7 @@
                   [--json] [--show-unscanned] [--paranoid] [--explain] [--no-baseline]
                   [--fail-on LEVEL]
     malskill baseline update [--home DIR] [--paths DIR ...]
+    malskill baseline diff [--home DIR] [--paths DIR ...] [--json]
     malskill list [--home DIR]
     malskill rules
 
@@ -18,6 +19,8 @@ installed on the machine running it.
 
 Exit codes: 0 = no findings, 1 = at least one finding, 2 = scanner error.
 ``scan --fail-on LEVEL`` narrows exit 1 to findings at or above LEVEL.
+``baseline diff`` exits 0 when nothing changed since the baseline, 1 when something did,
+and 2 when there is no baseline or it is tampered.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from malskill import __version__, baseline as baseline_module
 from malskill.inventory import DiscoveryOptions, discover
@@ -33,10 +36,12 @@ from malskill.report import (
     EXIT_ERROR,
     EXIT_OK,
     Report,
+    baseline_diff_state,
+    render_baseline_diff,
     render_inventory,
     render_rules_table,
 )
-from malskill.rules import SEVERITY_ORDER, Severity
+from malskill.rules import SEVERITY_ORDER, Severity, Unscanned
 from malskill.rules.engine import run as run_rules
 
 __all__ = ["main", "build_parser"]
@@ -158,6 +163,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_scope_args(baseline_update)
     baseline_update.add_argument(
+        "--json", action="store_true", help="emit the result as JSON"
+    )
+    baseline_diff = baseline_sub.add_parser(
+        "diff",
+        help="list files added, changed or removed since the baseline; runs no rules",
+        description="Compare the current files with the accepted baseline. No rules are "
+        "run. Exit 0 when nothing changed, 1 when something did, 2 when there is no "
+        "usable baseline.",
+    )
+    _add_scope_args(baseline_diff)
+    baseline_diff.add_argument(
         "--json", action="store_true", help="emit the result as JSON"
     )
     baseline_show = baseline_sub.add_parser(
@@ -283,6 +299,30 @@ def cmd_baseline_update(args: argparse.Namespace, stdout) -> int:
     return EXIT_OK
 
 
+def cmd_baseline_diff(args: argparse.Namespace, stdout) -> int:
+    options = _options(args)
+    store = baseline_module.load(options.resolved_home())
+    changes: List[baseline_module.FileChange] = []
+    unscanned: List[Unscanned] = []
+    snapshot: dict = {}
+    if store.exists and not store.tampered:
+        inventory = discover(options)
+        unhashed: Dict[str, List[Unscanned]] = {}
+        snapshot = baseline_module.collect(inventory, unhashed)
+        changes, uncompared = baseline_module.diff(snapshot, store, unhashed)
+        unscanned = list(inventory.unscanned)
+        for key in sorted(unhashed):
+            unscanned.extend(unhashed[key])
+        unscanned.extend(uncompared)
+    stdout.write(
+        render_baseline_diff(
+            store, changes, unscanned, targets=len(snapshot), as_json=args.json
+        )
+        + "\n"
+    )
+    return baseline_diff_state(store, changes)[1]
+
+
 def cmd_baseline_show(args: argparse.Namespace, stdout) -> int:
     store = baseline_module.load(getattr(args, "home", "") or "")
     if getattr(args, "json", False):
@@ -349,9 +389,11 @@ def main(argv: Optional[Sequence[str]] = None, stdout=None, stderr=None) -> int:
             command = getattr(args, "baseline_command", None)
             if command == "update":
                 return cmd_baseline_update(args, stdout)
+            if command == "diff":
+                return cmd_baseline_diff(args, stdout)
             if command == "show":
                 return cmd_baseline_show(args, stdout)
-            stderr.write("usage: malskill baseline update [--home DIR] [--paths DIR ...]\n")
+            stderr.write("usage: malskill baseline {update,diff,show} [--home DIR] ...\n")
             return EXIT_ERROR
         if args.command == "list":
             return cmd_list(args, stdout)
