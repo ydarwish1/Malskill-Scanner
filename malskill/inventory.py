@@ -109,7 +109,44 @@ def _read_text(path: str) -> Tuple[Optional[str], Optional[str]]:
     return data.decode("utf-8", errors="replace"), None
 
 
-def _read_json(path: str) -> Tuple[Optional[Any], Optional[str]]:
+# Strings are matched first so a ``//`` or ``,}`` inside one is left alone. Each string
+# or comment also accepts end-of-text instead of its closing token, so a cut-short file is
+# still matched in one linear pass. A trailing comma counts only after a value, so ``{,}``
+# and ``[1,,]`` stay invalid.
+_JSONC_STRING = r'"(?:\\.|[^"\\])*(?:"|\Z)'
+_JSONC_COMMENT_RE = re.compile(_JSONC_STRING + r"|//[^\n]*|/\*.*?(?:\*/|\Z)", re.S)
+_JSONC_TRAILING_COMMA_RE = re.compile(
+    _JSONC_STRING + r"|(?<=[^\s{\[,:])\s*,(?=\s*[}\]])", re.S
+)
+
+
+def _blank_jsonc_comment(match: re.Match[str]) -> str:
+    token = match.group(0)
+    if token.startswith('"'):
+        return token
+    if token.startswith("/*") and (len(token) < 4 or not token.endswith("*/")):
+        raise ValueError("unterminated /* comment at char %d" % match.start())
+    return re.sub(r"[^\n]", " ", token)
+
+
+def _blank_trailing_comma(match: re.Match[str]) -> str:
+    token = match.group(0)
+    return token if token.startswith('"') else token.replace(",", " ")
+
+
+def strip_jsonc(text: str) -> str:
+    """Blank ``//`` and ``/* */`` comments and trailing commas out of JSONC text.
+
+    Blanked characters become spaces (newlines are kept), so offsets and line numbers in
+    a later ``json`` error still point at the original file. Raises ``ValueError`` on an
+    unterminated block comment.
+    """
+    text = _JSONC_COMMENT_RE.sub(_blank_jsonc_comment, text)
+    return _JSONC_TRAILING_COMMA_RE.sub(_blank_trailing_comma, text)
+
+
+def _read_json(path: str, *, jsonc: bool = False) -> Tuple[Optional[Any], Optional[str]]:
+    """Parse a JSON file. With ``jsonc``, retry as JSONC when strict JSON fails."""
     text, error = _read_text(path)
     if error is not None:
         return None, error
@@ -121,7 +158,12 @@ def _read_json(path: str) -> Tuple[Optional[Any], Optional[str]]:
     try:
         return json.loads(text), None
     except ValueError as exc:
-        return None, "invalid JSON: %s" % exc
+        if not jsonc:
+            return None, "invalid JSON: %s" % exc
+    try:
+        return json.loads(strip_jsonc(text)), None
+    except ValueError as exc:
+        return None, "invalid JSON, even allowing comments and trailing commas: %s" % exc
 
 
 def _unscanned(target: str, path: str, reason: str, detail: str, finding_id=None):
@@ -424,7 +466,7 @@ def _load_mcp_config(
 ) -> None:
     if not os.path.isfile(path) or not inventory.claim_config(path):
         return
-    config, error = _read_json(path)
+    config, error = _read_json(path, jsonc=True)
     if error is not None:
         inventory.unscanned.append(
             _unscanned(
@@ -542,7 +584,7 @@ def _scan_embedded_configs(root: str, inventory: Inventory) -> None:
             path = os.path.join(dirpath, filename)
             if not inventory.claim_config(path):
                 continue
-            config, error = _read_json(path)
+            config, error = _read_json(path, jsonc=True)
             if error is not None:
                 inventory.unscanned.append(
                     _unscanned(

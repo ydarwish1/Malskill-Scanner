@@ -70,7 +70,7 @@ python3 eval/run_bench.py --out eval/BENCHMARK.md   # offline, about a second
 
 - Claude Code skills, plugins, commands, agents (user and project level)
 - Hook commands in `settings.json`
-- MCP server configs: `~/.claude.json`, `.mcp.json`, Claude Desktop, and `--all-clients` for Cursor and others
+- MCP server configs: `~/.claude.json`, `.mcp.json`, Claude Desktop, and `--all-clients` for Cursor and others. JSONC is accepted (`//` and `/* */` comments, trailing commas); a config still invalid after that is reported as NOT-FULLY-ANALYZED
 - A baseline of every file's hash, so a skill you trusted last week gets flagged when an update changes it
 
 ## Commands
@@ -92,6 +92,7 @@ Exit codes: 0 no findings, 1 findings, 2 scanner error. `--fail-on LEVEL` (`low`
 ## Known limits
 
 - `--fail-on` judges each finding by its severity alone. `BASELINE_TAMPERED` is HIGH, so `--fail-on critical` exits 0 on a tampered baseline (the finding is still printed), and NOT-FULLY-ANALYZED never changes the exit code at any level.
+- JSONC is accepted only in MCP config files. A `settings.json` with comments is still reported as NOT-FULLY-ANALYZED, and comments in `~/.claude.json`, a project `.mcp.json` or a client config are dropped before the rules run, so text inside them is never matched. A config inside a `--paths` bundle is also scanned as a raw file, comments included.
 
 ## Docs
 
