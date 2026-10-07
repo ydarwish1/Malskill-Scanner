@@ -99,9 +99,12 @@ HIDDEN_IN_MULTILINE_STRING = (
 
 # Table headers have no depth limit in TOML: a junk server and a sub-table of the
 # malicious one nested far deeper than json.dumps can recurse.
-DEEP_HEADERS = SUBSET_REMOTE_CODE + (
-    "[mcp_servers.junk{0}]\nx = 1\n[mcp_servers.notes-helper.env{0}]\nx = 1\n".format(".a" * 3000)
-)
+def _deep_headers(parts: int) -> str:
+    return SUBSET_REMOTE_CODE + (
+        "[mcp_servers.junk{0}]\nx = 1\n[mcp_servers.notes-helper.env{0}]\nx = 1\n".format(
+            ".a" * parts
+        )
+    )
 
 PINNED = """[mcp_servers.filesystem]
 command = "npx"
@@ -159,9 +162,7 @@ class CodexTomlTestCase(unittest.TestCase):
         self.assertNotIn("\u200b", detail)
         self.assertIn("evil[.]example[.]com", detail)
 
-    def assert_deep_headers_flagged(self) -> None:
-        _write(self.config, DEEP_HEADERS)
-        report = self.scan()
+    def assert_deep_headers_flagged(self, report: Dict[str, Any]) -> None:
         self.assertIn("MCP_RUNTIME_REMOTE_CODE", harness.finding_ids(report))
         rows = self.mcp_unscanned(report)
         self.assertEqual(["codex/junk", "codex/notes-helper"], sorted(r["target"] for r in rows))
@@ -222,7 +223,14 @@ class CodexTomlScanTests(CodexTomlTestCase):
             self.assert_not_fully_analyzed(report, "multi-line strings are not supported")
 
     def test_deep_table_headers_are_listed_not_crashed(self) -> None:
-        self.assert_deep_headers_flagged()
+        _write(self.config, _deep_headers(3000))
+        report = self.scan()
+        if HAS_TOMLLIB and "MCP_RUNTIME_REMOTE_CODE" not in harness.finding_ids(report):
+            # Recent 3.11+ patch releases of tomllib reject a key with more parts than
+            # the recursion limit, so the whole file is invalid TOML there.
+            self.assert_not_fully_analyzed(report, "invalid TOML")
+        else:
+            self.assert_deep_headers_flagged(report)
 
     def test_pinned_config_is_clean(self) -> None:
         _write(self.config, PINNED)
@@ -370,7 +378,10 @@ class SubsetFallbackTests(CodexTomlTestCase):
         self.assert_analyzed_and_flagged(self.scan())
 
     def test_deep_table_headers_are_listed_not_crashed(self) -> None:
-        self.assert_deep_headers_flagged()
+        # Deep enough to overflow json.dumps on every Python, whatever its C recursion
+        # limit or stack protection.
+        _write(self.config, _deep_headers(200000))
+        self.assert_deep_headers_flagged(self.scan())
 
     def test_dotted_key_over_a_value_is_not_fully_analyzed(self) -> None:
         cases = {
