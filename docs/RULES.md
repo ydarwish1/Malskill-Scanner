@@ -282,7 +282,7 @@ Why: an unparsed config is an unscanned config. Silently skipping it would turn 
 
 Do: fix or hand-review the config, then rescan so the servers it declares are analyzed.
 
-Wrong when: the config uses JSON5 beyond comments and trailing commas (single quotes, unquoted keys), or, on Python 3.9 and 3.10 only, TOML beyond the subset (multi-line arrays, dotted keys). Both are reported as not-analyzed rather than as findings.
+Wrong when: the config uses JSON5 beyond comments and trailing commas (single quotes, unquoted keys), or, on Python 3.9 and 3.10 only, TOML beyond the subset (multi-line arrays, more than 32 levels of nesting); dotted keys are read on every supported Python. Both are reported as not-analyzed rather than as findings.
 
 ## BASELINE_DRIFT (MEDIUM)
 

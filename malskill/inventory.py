@@ -328,15 +328,19 @@ def _parse_codex_toml(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str
 
 
 _TOML_TABLE_RE = re.compile(r"^\s*\[\[?([^\]]+)\]\]?\s*$")
-_TOML_KV_RE = re.compile(r"^\s*([A-Za-z0-9_.\"'-]+)\s*=\s*(.+?)\s*$")
+# Whitespace may separate the parts of a dotted key (``a . b``), as TOML allows.
+_TOML_KV_RE = re.compile(
+    r"^\s*([A-Za-z0-9_.\"'-]+(?:\s+[A-Za-z0-9_.\"'-]+)*)\s*=\s*(.+?)\s*$"
+)
 # Real configs nest a few levels; the cap keeps hostile nesting linear and recursion-free.
+# It bounds the brackets in one value and, separately, the tables dotted keys open.
 _TOML_MAX_DEPTH = 32
 
 
 def parse_toml_subset(text: str) -> Dict[str, Any]:
     """Parse the tiny slice of TOML that MCP client configs actually use.
 
-    Tables, string/array/inline-table/bool/number values. Anything else raises
+    Tables, dotted keys, string/array/inline-table/bool/number values. Anything else raises
     ValueError, and the caller reports the file as NOT-FULLY-ANALYZED rather than
     guessing. Deliberately not a TOML implementation.
     """
@@ -359,7 +363,7 @@ def parse_toml_subset(text: str) -> Dict[str, Any]:
         kv = _TOML_KV_RE.match(line)
         if not kv:
             raise ValueError("unsupported line: %s" % line[:60])
-        current[_toml_key(kv.group(1))] = _toml_value(kv.group(2))
+        _set_toml_key(current, kv.group(1), kv.group(2), 0)
     return root
 
 
@@ -384,14 +388,27 @@ def _split_toml_key(key: str) -> List[str]:
     return [p for p in parts if p]
 
 
-def _toml_key(key: str) -> str:
+def _set_toml_key(table: Dict[str, Any], key: str, token: str, dotted: int) -> None:
+    """Set ``key = token`` in ``table``; a dotted key opens the tables it names.
+
+    ``dotted`` counts the tables earlier dotted keys opened above this one, so dotted
+    keys nested in inline tables stay under the depth cap too.
+    """
     parts = _split_toml_key(key)
-    if len(parts) != 1:
-        raise ValueError("dotted or empty keys are not supported")
-    return parts[0]
+    if not parts:
+        raise ValueError("empty keys are not supported")
+    dotted += len(parts) - 1
+    if dotted > _TOML_MAX_DEPTH:
+        raise ValueError("nested deeper than %d levels" % _TOML_MAX_DEPTH)
+    for part in parts[:-1]:
+        node = table.setdefault(part, {})
+        if not isinstance(node, dict):
+            raise ValueError("dotted key extends a value: %s" % key.strip()[:60])
+        table = node
+    table[parts[-1]] = _toml_value(token, dotted)
 
 
-def _toml_value(token: str) -> Any:
+def _toml_value(token: str, dotted: int) -> Any:
     token = token.strip()
     if token.startswith("#"):
         return ""
@@ -407,7 +424,8 @@ def _toml_value(token: str) -> Any:
         if not token.rstrip().endswith("]"):
             raise ValueError("multi-line arrays are not supported")
         inner = token.strip()[1:-1]
-        return [_toml_value(part) for part in _split_top_level(inner) if part.strip()]
+        parts = _split_top_level(inner)
+        return [_toml_value(part, dotted) for part in parts if part.strip()]
     if token.startswith("{"):
         if not token.rstrip().endswith("}"):
             raise ValueError("multi-line inline tables are not supported")
@@ -417,7 +435,7 @@ def _toml_value(token: str) -> Any:
             if not part.strip():
                 continue
             key, _, value = part.partition("=")
-            table[_toml_key(key)] = _toml_value(value)
+            _set_toml_key(table, key, value, dotted)
         return table
     lowered = token.lower()
     if lowered in ("true", "false"):
