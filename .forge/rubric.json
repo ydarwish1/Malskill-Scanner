@@ -17,7 +17,8 @@
       "criteria": [
         "Detection never gets weaker: no rule, pattern, fixture or test is removed, loosened or skipped, every malicious fixture still fires its rule, and the benign corpus still has zero findings",
         "Rules still run on raw bytes; any file content shown to the user (terminal, Markdown, SARIF, JSON) is sanitised the same way: invisible unicode escaped, URLs defanged",
-        "No new subprocess outside malskill/explain.py, no network access, and no new path where a file the scanner could not read is dropped instead of reported as NOT-FULLY-ANALYZED"
+        "No new subprocess outside malskill/explain.py, no network access, and no new path where a file the scanner could not read is dropped instead of reported as NOT-FULLY-ANALYZED",
+        "Nothing the default branch analyzes becomes NOT-FULLY-ANALYZED and no finding it reports disappears (that state exits 0, so it is weaker detection). A parsing, size-limit or discovery change adds a test: a hostile input main flags still gets that finding and exit 1"
       ]
     },
     {
