@@ -32,6 +32,7 @@ ever skipped silently.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -43,7 +44,12 @@ try:
 except ImportError:  # Python 3.9 and 3.10: parse_toml_subset below is used instead
     tomllib = None  # type: ignore[assignment]
 
-from malskill.rules import REASON_PARSE_ERROR, REASON_UNREADABLE, Unscanned
+from malskill.rules import (
+    REASON_PARSE_ERROR,
+    REASON_TOO_LARGE,
+    REASON_UNREADABLE,
+    Unscanned,
+)
 from malskill.sanitize import for_display
 from malskill.targets import (
     MAX_FILE_BYTES,
@@ -105,20 +111,20 @@ class DiscoveryOptions:
 # ---------------------------------------------------------------------------------------
 
 
-def _read_text(path: str) -> Tuple[Optional[str], Optional[str]]:
-    """Read a file as text. Returns (text, error).
+def _read_text(path: str) -> Tuple[Optional[str], Optional[str], bool]:
+    """Read a file as text. Returns (text, error, truncated).
 
-    A file over MAX_FILE_BYTES is an error, never a parsed prefix: TOML has no closing
-    delimiter, so padding could push a server past the cut and out of the scan.
+    A file over MAX_FILE_BYTES yields its first MAX_FILE_BYTES with ``truncated`` set.
+    The caller parses that prefix, so padding cannot hide a server that sits inside it,
+    and also lists the file as NOT-FULLY-ANALYZED (``_report_too_large``) for the rest.
     """
     try:
         with open(path, "rb") as handle:
             data = handle.read(MAX_FILE_BYTES + 1)
     except OSError as exc:
-        return None, str(exc)
-    if len(data) > MAX_FILE_BYTES:
-        return None, "larger than %d bytes; not parsed" % MAX_FILE_BYTES
-    return data.decode("utf-8", errors="replace"), None
+        return None, str(exc), False
+    truncated = len(data) > MAX_FILE_BYTES
+    return data[:MAX_FILE_BYTES].decode("utf-8", errors="replace"), None, truncated
 
 
 # Strings are matched first so a ``//`` or ``,}`` inside one is left alone. Each string
@@ -136,11 +142,12 @@ _JSONC_TRAILING_COMMA_RE = re.compile(
 )
 
 
-def _blank_jsonc_comment(match: re.Match[str]) -> str:
+def _blank_jsonc_comment(match: re.Match[str], *, cut_short: bool = False) -> str:
     token = match.group(0)
     if token.startswith('"'):
         return token
-    if token.startswith("/*") and (len(token) < 4 or not token.endswith("*/")):
+    unterminated = token.startswith("/*") and (len(token) < 4 or not token.endswith("*/"))
+    if unterminated and not cut_short:
         raise ValueError("unterminated /* comment at char %d" % match.start())
     return re.sub(r"[^\r\n]", " ", token)
 
@@ -150,36 +157,120 @@ def _blank_trailing_comma(match: re.Match[str]) -> str:
     return token if token.startswith('"') else token.replace(",", " ")
 
 
-def strip_jsonc(text: str) -> str:
+def strip_jsonc(text: str, *, cut_short: bool = False) -> str:
     """Blank ``//`` and ``/* */`` comments and trailing commas out of JSONC text.
 
     Blanked characters become spaces (CR and LF are kept), so offsets and line numbers in
     a later ``json`` error still point at the original file. Raises ``ValueError`` on an
-    unterminated block comment.
+    unterminated block comment, unless ``cut_short`` says the text is the prefix of a
+    larger file, whose last comment may close past the cut.
     """
-    text = _JSONC_COMMENT_RE.sub(_blank_jsonc_comment, text)
+    blank = functools.partial(_blank_jsonc_comment, cut_short=cut_short)
+    text = _JSONC_COMMENT_RE.sub(blank, text)
     return _JSONC_TRAILING_COMMA_RE.sub(_blank_trailing_comma, text)
 
 
-def _read_json(path: str, *, jsonc: bool = False) -> Tuple[Optional[Any], Optional[str]]:
-    """Parse a JSON file. With ``jsonc``, retry as JSONC when strict JSON fails."""
-    text, error = _read_text(path)
+_JSONC_INVALID = "invalid JSON, even allowing comments and trailing commas"
+
+
+def _read_json(
+    path: str, *, jsonc: bool = False
+) -> Tuple[Optional[Any], Optional[str], bool]:
+    """Parse a JSON file. With ``jsonc``, retry as JSONC when strict JSON fails.
+
+    Returns (data, error, truncated); a truncated file is parsed from its prefix.
+    """
+    text, error, truncated = _read_text(path)
     if error is not None:
-        return None, error
+        return None, error, truncated
     if text is None:
-        return None, "unreadable"
+        return None, "unreadable", truncated
     stripped = text.lstrip("\ufeff \t\r\n")
     if not stripped:
-        return None, "file is empty"
+        return None, "file is empty", truncated
+    if truncated:
+        return _read_json_prefix(text, jsonc=jsonc)
     try:
-        return json.loads(text), None
+        return json.loads(text), None, False
     except ValueError as exc:
         if not jsonc:
-            return None, "invalid JSON: %s" % exc
+            return None, "invalid JSON: %s" % exc, False
     try:
-        return json.loads(strip_jsonc(text)), None
+        return json.loads(strip_jsonc(text)), None, False
     except ValueError as exc:
-        return None, "invalid JSON, even allowing comments and trailing commas: %s" % exc
+        return None, "%s: %s" % (_JSONC_INVALID, exc), False
+
+
+def _read_json_prefix(
+    text: str, *, jsonc: bool
+) -> Tuple[Optional[Any], Optional[str], bool]:
+    """Parse the first MAX_FILE_BYTES of a larger JSON file.
+
+    The prefix keeps whatever parses before the cut, so it must see the text the client
+    parses: a quote inside a comment would otherwise end it early, still valid. Comments
+    and trailing commas are stripped first for JSONC and rejected for strict JSON.
+    """
+    bare = strip_jsonc(text, cut_short=True)
+    if bare != text and not jsonc:
+        return None, "invalid JSON: comments or trailing commas", True
+    try:
+        return _loads_prefix(bare), None, True
+    except ValueError as exc:
+        return None, "%s: %s" % (_JSONC_INVALID if jsonc else "invalid JSON", exc), True
+
+
+def _loads_prefix(text: str) -> Any:
+    """Decode a JSON text cut at MAX_FILE_BYTES.
+
+    When the whole top-level value fits, whatever follows it was cut mid-way (half a
+    ``//``, say) and is ignored. When the cut lands inside it, ``_close_prefix`` keeps
+    every member that is complete before the cut. The file is listed as
+    NOT-FULLY-ANALYZED either way. Nesting too deep for ``json`` is a ``ValueError``.
+    """
+    try:
+        try:
+            return json.JSONDecoder().raw_decode(text.lstrip(" \t\r\n"))[0]
+        except ValueError:
+            return json.loads(_close_prefix(text))
+    except RecursionError:
+        raise ValueError("nested too deep to parse") from None
+
+
+# A string either closes or runs to the cut; a lone quote is one that never closed.
+_JSON_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|"|[{}\[\],:]')
+
+
+def _close_prefix(text: str) -> str:
+    """Cut JSON text back to its last complete member and close the brackets left open.
+
+    A member is complete after a container closes, after a string value, and before a
+    comma. A value the cut went through is dropped, never parsed in part; what comes
+    before the last complete member is still checked by ``json``.
+    """
+    stack: List[str] = []
+    in_value = False  # inside an object, a ':' was seen since the last '{' or ','
+    cut = 0  # every token that changes the stack moves the cut, so the stack matches it
+    for match in _JSON_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if token == '"':
+            break
+        if token in ("{", "["):
+            stack.append("}" if token == "{" else "]")
+            in_value = False
+            cut = match.end()
+        elif token in ("}", "]"):
+            if not stack or stack.pop() != token:
+                return text  # malformed before the cut: let json report it
+            in_value = True
+            cut = match.end()
+        elif token == ",":
+            in_value = False
+            cut = match.start()
+        elif token == ":":
+            in_value = True
+        elif stack and (stack[-1] == "]" or in_value):
+            cut = match.end()
+    return text[:cut] + "".join(reversed(stack))
 
 
 def _unscanned(target: str, path: str, reason: str, detail: str, finding_id=None):
@@ -188,8 +279,23 @@ def _unscanned(target: str, path: str, reason: str, detail: str, finding_id=None
     )
 
 
+def _report_too_large(
+    inventory: Inventory, target: str, path: str, finding_id=None
+) -> None:
+    inventory.unscanned.append(
+        _unscanned(
+            target,
+            path,
+            REASON_TOO_LARGE,
+            "larger than %d bytes; only the first %d were parsed"
+            % (MAX_FILE_BYTES, MAX_FILE_BYTES),
+            finding_id=finding_id,
+        )
+    )
+
+
 def _line_of_snippet(path: str, snippet: str) -> Optional[int]:
-    text, error = _read_text(path)
+    text, error, _ = _read_text(path)
     if error or not text or not snippet:
         return None
     probe = snippet.strip().split("\n")[0][:60]
@@ -510,7 +616,14 @@ def _load_mcp_config(
 ) -> None:
     if not os.path.isfile(path) or not inventory.claim_config(path):
         return
-    config, error = _read_json(path, jsonc=True)
+    config, error, truncated = _read_json(path, jsonc=True)
+    if truncated:
+        _report_too_large(
+            inventory,
+            "mcp-config:%s" % os.path.basename(path),
+            path,
+            finding_id="MCP_UNPARSEABLE_CONFIG",
+        )
     if error is not None:
         inventory.unscanned.append(
             _unscanned(
@@ -565,7 +678,9 @@ def _load_mcp_config(
 def _load_settings(path: str, inventory: Inventory) -> None:
     if not os.path.isfile(path) or not inventory.claim_config(path):
         return
-    config, error = _read_json(path)
+    config, error, truncated = _read_json(path)
+    if truncated:
+        _report_too_large(inventory, "settings:%s" % os.path.basename(path), path)
     if error is not None:
         inventory.unscanned.append(
             _unscanned(
@@ -584,7 +699,7 @@ def _load_settings(path: str, inventory: Inventory) -> None:
 def _load_codex_toml(path: str, inventory: Inventory) -> None:
     if not os.path.isfile(path) or not inventory.claim_config(path):
         return
-    text, error = _read_text(path)
+    text, error, truncated = _read_text(path)
     if error is not None or text is None:
         inventory.unscanned.append(
             _unscanned(
@@ -596,6 +711,16 @@ def _load_codex_toml(path: str, inventory: Inventory) -> None:
             )
         )
         return
+    if truncated:
+        _report_too_large(
+            inventory,
+            "mcp-config:%s" % os.path.basename(path),
+            path,
+            finding_id="MCP_UNPARSEABLE_CONFIG",
+        )
+        # TOML has no closing delimiter: drop the line the cut went through, so a value
+        # read in part is never parsed as if it were whole.
+        text = text[: text.rfind("\n") + 1]
     data, error = _parse_codex_toml(text)
     if error is not None or data is None:
         inventory.unscanned.append(
@@ -627,7 +752,16 @@ def _scan_embedded_configs(root: str, inventory: Inventory) -> None:
             path = os.path.join(dirpath, filename)
             if not inventory.claim_config(path):
                 continue
-            config, error = _read_json(path, jsonc=filename not in _SETTINGS_FILENAMES)
+            config, error, truncated = _read_json(
+                path, jsonc=filename not in _SETTINGS_FILENAMES
+            )
+            if truncated:
+                _report_too_large(
+                    inventory,
+                    "mcp-config:%s" % os.path.basename(path),
+                    path,
+                    finding_id="MCP_UNPARSEABLE_CONFIG",
+                )
             if error is not None:
                 inventory.unscanned.append(
                     _unscanned(
@@ -672,7 +806,9 @@ def _discover_plugins(plugins_root: str, inventory: Inventory) -> None:
 
     manifest = os.path.join(plugins_root, "installed_plugins.json")
     if os.path.isfile(manifest):
-        data, error = _read_json(manifest)
+        data, error, truncated = _read_json(manifest)
+        if truncated:
+            _report_too_large(inventory, "plugin:installed_plugins.json", manifest)
         if error is not None:
             inventory.unscanned.append(
                 _unscanned(

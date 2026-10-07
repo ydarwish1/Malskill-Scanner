@@ -274,7 +274,7 @@ Quiet on: pinned packages (`pkg@1.2.3`, `pkg==1.2`), `${ENV_VAR}` references, sh
 
 ## MCP_UNPARSEABLE_CONFIG (MEDIUM, reported as NOT-FULLY-ANALYZED)
 
-Fires when: an MCP config file exists but does not parse. Invalid JSON even after `//` and `/* */` comments and trailing commas are allowed (JSONC), a non-object top-level value, or a `~/.codex/config.toml` that does not parse: invalid TOML on Python 3.11+, where `tomllib` reads it, or TOML outside the small supported subset on Python 3.9 and 3.10. A config file larger than 2 MiB is reported the same way without being parsed, so padding cannot push a server past the read limit.
+Fires when: an MCP config file exists but does not parse. Invalid JSON even after `//` and `/* */` comments and trailing commas are allowed (JSONC), a non-object top-level value, or a `~/.codex/config.toml` that does not parse: invalid TOML on Python 3.11+, where `tomllib` reads it, or TOML outside the small supported subset on Python 3.9 and 3.10. A config file larger than 2 MiB is parsed from its first 2 MiB, so padding after a server cannot hide it, and is also reported this way (reason `too-large`) because anything past the cut was not read. In `~/.codex/config.toml` the line the cut goes through is dropped, never parsed in part.
 
 This is not a finding. It is emitted as a NOT-FULLY-ANALYZED record (`emits == "unscanned"` in the registry) and never contributes to the exit code. The ID is registered and documented so it is discoverable.
 
