@@ -116,7 +116,7 @@ def _read_text(path: str) -> Tuple[Optional[str], Optional[str], bool]:
 
     A file over MAX_FILE_BYTES yields its first MAX_FILE_BYTES with ``truncated`` set.
     The caller parses that prefix, so padding cannot hide a server that sits inside it,
-    and also lists the file as NOT-FULLY-ANALYZED (``_too_large``) for what lies past it.
+    and also lists the file as NOT-FULLY-ANALYZED (``_report_too_large``) for the rest.
     """
     try:
         with open(path, "rb") as handle:
@@ -202,12 +202,57 @@ def _read_json(
 
 
 def _loads_prefix(text: str) -> Any:
-    """Decode the first JSON value of a file cut at MAX_FILE_BYTES.
+    """Decode a JSON text cut at MAX_FILE_BYTES.
 
-    Whatever follows that value was cut mid-way (half a ``//``, say), so it is ignored;
-    the file is listed as NOT-FULLY-ANALYZED anyway.
+    When the whole top-level value fits, whatever follows it was cut mid-way (half a
+    ``//``, say) and is ignored. When the cut lands inside it, ``_close_prefix`` keeps
+    every member that is complete before the cut. The file is listed as
+    NOT-FULLY-ANALYZED either way. Nesting too deep for ``json`` is a ``ValueError``.
     """
-    return json.JSONDecoder().raw_decode(text.lstrip(" \t\r\n"))[0]
+    try:
+        try:
+            return json.JSONDecoder().raw_decode(text.lstrip(" \t\r\n"))[0]
+        except ValueError:
+            return json.loads(_close_prefix(text))
+    except RecursionError:
+        raise ValueError("nested too deep to parse") from None
+
+
+# A string either closes or runs to the cut; a lone quote is one that never closed.
+_JSON_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|"|[{}\[\],:]')
+
+
+def _close_prefix(text: str) -> str:
+    """Cut JSON text back to its last complete member and close the brackets left open.
+
+    A member is complete after a container closes, after a string value, and before a
+    comma. A value the cut went through is dropped, never parsed in part; what comes
+    before the last complete member is still checked by ``json``.
+    """
+    stack: List[str] = []
+    in_value = False  # inside an object, a ':' was seen since the last '{' or ','
+    cut = 0  # every token that changes the stack moves the cut, so the stack matches it
+    for match in _JSON_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if token == '"':
+            break
+        if token in ("{", "["):
+            stack.append("}" if token == "{" else "]")
+            in_value = False
+            cut = match.end()
+        elif token in ("}", "]"):
+            if not stack or stack.pop() != token:
+                return text  # malformed before the cut: let json report it
+            in_value = True
+            cut = match.end()
+        elif token == ",":
+            in_value = False
+            cut = match.start()
+        elif token == ":":
+            in_value = True
+        elif stack and (stack[-1] == "]" or in_value):
+            cut = match.end()
+    return text[:cut] + "".join(reversed(stack))
 
 
 def _unscanned(target: str, path: str, reason: str, detail: str, finding_id=None):
@@ -216,14 +261,18 @@ def _unscanned(target: str, path: str, reason: str, detail: str, finding_id=None
     )
 
 
-def _too_large(target: str, path: str, finding_id=None) -> Unscanned:
-    return _unscanned(
-        target,
-        path,
-        REASON_TOO_LARGE,
-        "larger than %d bytes; only the first %d were parsed"
-        % (MAX_FILE_BYTES, MAX_FILE_BYTES),
-        finding_id=finding_id,
+def _report_too_large(
+    inventory: Inventory, target: str, path: str, finding_id=None
+) -> None:
+    inventory.unscanned.append(
+        _unscanned(
+            target,
+            path,
+            REASON_TOO_LARGE,
+            "larger than %d bytes; only the first %d were parsed"
+            % (MAX_FILE_BYTES, MAX_FILE_BYTES),
+            finding_id=finding_id,
+        )
     )
 
 
@@ -551,12 +600,11 @@ def _load_mcp_config(
         return
     config, error, truncated = _read_json(path, jsonc=True)
     if truncated:
-        inventory.unscanned.append(
-            _too_large(
-                "mcp-config:%s" % os.path.basename(path),
-                path,
-                finding_id="MCP_UNPARSEABLE_CONFIG",
-            )
+        _report_too_large(
+            inventory,
+            "mcp-config:%s" % os.path.basename(path),
+            path,
+            finding_id="MCP_UNPARSEABLE_CONFIG",
         )
     if error is not None:
         inventory.unscanned.append(
@@ -614,9 +662,7 @@ def _load_settings(path: str, inventory: Inventory) -> None:
         return
     config, error, truncated = _read_json(path)
     if truncated:
-        inventory.unscanned.append(
-            _too_large("settings:%s" % os.path.basename(path), path)
-        )
+        _report_too_large(inventory, "settings:%s" % os.path.basename(path), path)
     if error is not None:
         inventory.unscanned.append(
             _unscanned(
@@ -648,12 +694,11 @@ def _load_codex_toml(path: str, inventory: Inventory) -> None:
         )
         return
     if truncated:
-        inventory.unscanned.append(
-            _too_large(
-                "mcp-config:%s" % os.path.basename(path),
-                path,
-                finding_id="MCP_UNPARSEABLE_CONFIG",
-            )
+        _report_too_large(
+            inventory,
+            "mcp-config:%s" % os.path.basename(path),
+            path,
+            finding_id="MCP_UNPARSEABLE_CONFIG",
         )
         # TOML has no closing delimiter: drop the line the cut went through, so a value
         # read in part is never parsed as if it were whole.
@@ -693,12 +738,11 @@ def _scan_embedded_configs(root: str, inventory: Inventory) -> None:
                 path, jsonc=filename not in _SETTINGS_FILENAMES
             )
             if truncated:
-                inventory.unscanned.append(
-                    _too_large(
-                        "mcp-config:%s" % os.path.basename(path),
-                        path,
-                        finding_id="MCP_UNPARSEABLE_CONFIG",
-                    )
+                _report_too_large(
+                    inventory,
+                    "mcp-config:%s" % os.path.basename(path),
+                    path,
+                    finding_id="MCP_UNPARSEABLE_CONFIG",
                 )
             if error is not None:
                 inventory.unscanned.append(
@@ -746,9 +790,7 @@ def _discover_plugins(plugins_root: str, inventory: Inventory) -> None:
     if os.path.isfile(manifest):
         data, error, truncated = _read_json(manifest)
         if truncated:
-            inventory.unscanned.append(
-                _too_large("plugin:installed_plugins.json", manifest)
-            )
+            _report_too_large(inventory, "plugin:installed_plugins.json", manifest)
         if error is not None:
             inventory.unscanned.append(
                 _unscanned(
