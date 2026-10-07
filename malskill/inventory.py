@@ -36,6 +36,7 @@ import functools
 import json
 import os
 import re
+import string
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -328,10 +329,7 @@ def _parse_codex_toml(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str
 
 
 _TOML_TABLE_RE = re.compile(r"^\s*\[\[?([^\]]+)\]\]?\s*$")
-# Whitespace may separate the parts of a dotted key (``a . b``), as TOML allows.
-_TOML_KV_RE = re.compile(
-    r"^\s*([A-Za-z0-9_.\"'-]+(?:\s+[A-Za-z0-9_.\"'-]+)*)\s*=\s*(.+?)\s*$"
-)
+_TOML_KEY_CHARS = frozenset(string.ascii_letters + string.digits + "_.\"'-")
 # Real configs nest a few levels; the cap keeps hostile nesting linear and recursion-free.
 # It bounds the brackets in one value and, separately, the tables dotted keys open.
 _TOML_MAX_DEPTH = 32
@@ -360,11 +358,46 @@ def parse_toml_subset(text: str) -> Dict[str, Any]:
                     current[part] = node
                 current = node
             continue
-        kv = _TOML_KV_RE.match(line)
-        if not kv:
-            raise ValueError("unsupported line: %s" % line[:60])
-        _set_toml_key(current, kv.group(1), kv.group(2), 0)
+        key, value = _split_toml_line(line)
+        _set_toml_key(current, key, value, 0)
     return root
+
+
+def _split_toml_line(line: str) -> Tuple[str, str]:
+    """``key = value`` split at the first ``=``; any other line raises ValueError.
+
+    No regex: a backtracking pattern goes quadratic on long whitespace runs.
+    """
+    key, equals, value = line.partition("=")
+    key, value = key.strip(), value.strip()
+    if not equals or not value or not _is_line_key(key):
+        raise ValueError("unsupported line: %s" % line[:60])
+    return key, value
+
+
+def _is_line_key(key: str) -> bool:
+    """Bare key characters and quoted parts; whitespace only beside a dot (``a . b``)."""
+    quote = ""
+    index = 0
+    while index < len(key):
+        ch = key[index]
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch.isspace():
+            # ``key`` is stripped, so a whitespace run has a character on both sides.
+            end = index
+            while key[end].isspace():
+                end += 1
+            if key[index - 1] != "." and key[end] != ".":
+                return False
+            index = end
+            continue
+        elif ch in "\"'":
+            quote = ch
+        elif ch not in _TOML_KEY_CHARS:
+            return False
+        index += 1
+    return bool(key)
 
 
 def _split_toml_key(key: str) -> List[str]:
@@ -388,30 +421,36 @@ def _split_toml_key(key: str) -> List[str]:
     return [p for p in parts if p]
 
 
-def _set_toml_key(table: Dict[str, Any], key: str, token: str, dotted: int) -> None:
+def _set_toml_key(table: Dict[str, Any], key: str, token: str, dotted_depth: int) -> None:
     """Set ``key = token`` in ``table``; a dotted key opens the tables it names.
 
-    ``dotted`` counts the tables earlier dotted keys opened above this one, so dotted
-    keys nested in inline tables stay under the depth cap too.
+    ``dotted_depth`` counts the tables earlier dotted keys opened above this one, so
+    dotted keys nested in inline tables stay under the depth cap too.
     """
     parts = _split_toml_key(key)
     if not parts:
         raise ValueError("empty keys are not supported")
-    dotted += len(parts) - 1
-    if dotted > _TOML_MAX_DEPTH:
+    dotted_depth += len(parts) - 1
+    if dotted_depth > _TOML_MAX_DEPTH:
         raise ValueError("nested deeper than %d levels" % _TOML_MAX_DEPTH)
     for part in parts[:-1]:
         node = table.setdefault(part, {})
         if not isinstance(node, dict):
             raise ValueError("dotted key extends a value: %s" % key.strip()[:60])
         table = node
-    table[parts[-1]] = _toml_value(token, dotted)
+    table[parts[-1]] = _toml_value(token, dotted_depth)
 
 
-def _toml_value(token: str, dotted: int) -> Any:
+def _toml_value(token: str, dotted_depth: int) -> Any:
     token = token.strip()
     if token.startswith("#"):
         return ""
+    if token.startswith(('"""', "'''")):
+        end = token.find(token[:3], 3)
+        if end == -1:
+            # The lines inside would otherwise be parsed as keys and tables.
+            raise ValueError("multi-line strings are not supported")
+        return token[3:end]
     if token.startswith('"') or token.startswith("'"):
         quote = token[0]
         end = token.find(quote, 1)
@@ -425,7 +464,7 @@ def _toml_value(token: str, dotted: int) -> Any:
             raise ValueError("multi-line arrays are not supported")
         inner = token.strip()[1:-1]
         parts = _split_top_level(inner)
-        return [_toml_value(part, dotted) for part in parts if part.strip()]
+        return [_toml_value(part, dotted_depth) for part in parts if part.strip()]
     if token.startswith("{"):
         if not token.rstrip().endswith("}"):
             raise ValueError("multi-line inline tables are not supported")
@@ -435,7 +474,7 @@ def _toml_value(token: str, dotted: int) -> Any:
             if not part.strip():
                 continue
             key, _, value = part.partition("=")
-            _set_toml_key(table, key, value, dotted)
+            _set_toml_key(table, key, value, dotted_depth)
         return table
     lowered = token.lower()
     if lowered in ("true", "false"):
@@ -579,6 +618,11 @@ def _iter_hook_commands(entries: Any, matcher: str = "") -> List[Tuple[str, str]
     return out
 
 
+# A server entry nested too deep for ``json.dumps`` (TOML table headers have no depth
+# limit) is scanned up to this depth and listed as not fully analyzed.
+_SERVER_CLIP_DEPTH = 64
+
+
 def _server_targets(
     servers: Any, config_path: str, client: str, scope: str = ""
 ) -> List[Target]:
@@ -591,6 +635,24 @@ def _server_targets(
         display = "%s/%s" % (client, name) if client else str(name)
         if scope:
             display = "%s (%s)" % (display, scope)
+        errors: List[Unscanned] = []
+        try:
+            blob = json.dumps({name: config}, indent=2, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            blob = str(config)
+        except RecursionError:
+            config = _clip_depth(config, _SERVER_CLIP_DEPTH)
+            blob = json.dumps({name: config}, indent=2, ensure_ascii=False, default=str)
+            errors.append(
+                _unscanned(
+                    display,
+                    config_path,
+                    REASON_PARSE_ERROR,
+                    "nested too deep to scan; values past %d levels were not scanned"
+                    % _SERVER_CLIP_DEPTH,
+                    finding_id="MCP_UNPARSEABLE_CONFIG",
+                )
+            )
         meta: Dict[str, Any] = {
             "config": config,
             "source_file": config_path,
@@ -600,10 +662,6 @@ def _server_targets(
         for key in ("description", "instructions", "tools", "prompts"):
             if key in config:
                 meta[key] = config[key]
-        try:
-            blob = json.dumps({name: config}, indent=2, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            blob = str(config)
         target = Target(
             kind=TargetKind.MCP_SERVER,
             name=display,
@@ -611,6 +669,7 @@ def _server_targets(
             source=config_path,
             synthetic_only=True,
             meta=meta,
+            load_errors=errors,
         )
         target.synthetic_files = [
             synthetic_record(
@@ -622,6 +681,19 @@ def _server_targets(
         ]
         targets.append(target)
     return targets
+
+
+def _clip_depth(value: Any, depth: int) -> Any:
+    """``value`` with every table or array nested past ``depth`` levels left out."""
+    if isinstance(value, dict):
+        if depth <= 0:
+            return {}
+        return {key: _clip_depth(item, depth - 1) for key, item in value.items()}
+    if isinstance(value, list):
+        if depth <= 0:
+            return []
+        return [_clip_depth(item, depth - 1) for item in value]
+    return value
 
 
 # ---------------------------------------------------------------------------------------

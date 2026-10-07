@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from typing import Any, Dict, List
 from unittest import mock
@@ -91,6 +92,17 @@ DOTTED_OVER_A_VALUE = SUBSET_REMOTE_CODE.replace(
     'model = "o4-mini"\n', 'model = "o4-mini"\nmodel.name = "x"\n'
 )
 
+# Valid TOML: the lines inside the multi-line string are text, not a table and a key.
+HIDDEN_IN_MULTILINE_STRING = (
+    SUBSET_REMOTE_CODE + 'notes = """\n[mcp_servers]\nnotes-helper = "gone"\ny = 1"""\n'
+)
+
+# Table headers have no depth limit in TOML: a junk server and a sub-table of the
+# malicious one nested far deeper than json.dumps can recurse.
+DEEP_HEADERS = SUBSET_REMOTE_CODE + (
+    "[mcp_servers.junk{0}]\nx = 1\n[mcp_servers.notes-helper.env{0}]\nx = 1\n".format(".a" * 3000)
+)
+
 PINNED = """[mcp_servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem@2025.8.21", "/tmp/notes"]
@@ -147,6 +159,17 @@ class CodexTomlTestCase(unittest.TestCase):
         self.assertNotIn("\u200b", detail)
         self.assertIn("evil[.]example[.]com", detail)
 
+    def assert_deep_headers_flagged(self) -> None:
+        _write(self.config, DEEP_HEADERS)
+        report = self.scan()
+        self.assertIn("MCP_RUNTIME_REMOTE_CODE", harness.finding_ids(report))
+        rows = self.mcp_unscanned(report)
+        self.assertEqual(["codex/junk", "codex/notes-helper"], sorted(r["target"] for r in rows))
+        for row in rows:
+            self.assertEqual(self.config, row["file"])
+            self.assertIn("nested too deep to scan", row["detail"])
+        self.assertEqual(1, report["exit"])
+
     def assert_size_cap(self) -> None:
         _write(self.config, _padded(SUBSET_REMOTE_CODE, MAX_FILE_BYTES))
         self.assert_analyzed_and_flagged(self.scan())
@@ -190,6 +213,17 @@ class CodexTomlScanTests(CodexTomlTestCase):
         label = "invalid TOML" if HAS_TOMLLIB else "TOML outside the supported subset"
         self.assert_not_fully_analyzed(self.scan(), label)
 
+    def test_server_hidden_by_a_multiline_string(self) -> None:
+        _write(self.config, HIDDEN_IN_MULTILINE_STRING)
+        report = self.scan()
+        if HAS_TOMLLIB:
+            self.assert_analyzed_and_flagged(report)
+        else:
+            self.assert_not_fully_analyzed(report, "multi-line strings are not supported")
+
+    def test_deep_table_headers_are_listed_not_crashed(self) -> None:
+        self.assert_deep_headers_flagged()
+
     def test_pinned_config_is_clean(self) -> None:
         _write(self.config, PINNED)
         report = self.scan()
@@ -201,6 +235,7 @@ class CodexTomlScanTests(CodexTomlTestCase):
         cases = {
             "unterminated-string": SUBSET_REMOTE_CODE.replace('bash -s"]', "bash -s]"),
             "garbage-line": SUBSET_REMOTE_CODE + "this is not toml\n",
+            "bare-key-with-space": SUBSET_REMOTE_CODE + "foo bar = 1\n",
         }
         if HAS_TOMLLIB:
             cases["duplicate-table"] = SUBSET_REMOTE_CODE + '[mcp_servers.notes-helper]\ncommand = "x"\n'
@@ -308,6 +343,34 @@ class SubsetFallbackTests(CodexTomlTestCase):
         self.assertEqual("CLEAN", harness.overall_status(report), str(report))
         self.assertEqual([], harness.unscanned(report))
         self.assertEqual(0, report["exit"])
+
+    def test_multiline_strings_are_not_fully_analyzed(self) -> None:
+        for quote in ('"""', "'''"):
+            with self.subTest(quote=quote):
+                _write(self.config, HIDDEN_IN_MULTILINE_STRING.replace('"""', quote))
+                self.assert_not_fully_analyzed(self.scan(), "multi-line strings are not supported")
+
+    def test_single_line_triple_quoted_strings_are_read(self) -> None:
+        for quote in ('"""', "'''"):
+            with self.subTest(quote=quote):
+                command = "command = %sbash%s" % (quote, quote)
+                self.assertEqual({"command": "bash"}, inventory.parse_toml_subset(command))
+                _write(self.config, SUBSET_REMOTE_CODE.replace('command = "bash"', command))
+                self.assert_analyzed_and_flagged(self.scan())
+
+    def test_long_whitespace_runs_parse_in_linear_time(self) -> None:
+        spaces = " " * 1000000
+        start = time.monotonic()
+        data = inventory.parse_toml_subset('note = "x%sy"\nlog = x%sy\n' % (spaces, spaces))
+        with self.assertRaisesRegex(ValueError, "unsupported line"):
+            inventory.parse_toml_subset("a%sb = 1\n" % spaces)
+        self.assertLess(time.monotonic() - start, 5.0)
+        self.assertEqual({"note": "x%sy" % spaces, "log": "x%sy" % spaces}, data)
+        _write(self.config, 'note = "x%sy"\n' % spaces + SUBSET_REMOTE_CODE)
+        self.assert_analyzed_and_flagged(self.scan())
+
+    def test_deep_table_headers_are_listed_not_crashed(self) -> None:
+        self.assert_deep_headers_flagged()
 
     def test_dotted_key_over_a_value_is_not_fully_analyzed(self) -> None:
         cases = {
