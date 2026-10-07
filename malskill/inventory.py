@@ -170,6 +170,9 @@ def strip_jsonc(text: str, *, cut_short: bool = False) -> str:
     return _JSONC_TRAILING_COMMA_RE.sub(_blank_trailing_comma, text)
 
 
+_JSONC_INVALID = "invalid JSON, even allowing comments and trailing commas"
+
+
 def _read_json(
     path: str, *, jsonc: bool = False
 ) -> Tuple[Optional[Any], Optional[str], bool]:
@@ -185,20 +188,35 @@ def _read_json(
     stripped = text.lstrip("\ufeff \t\r\n")
     if not stripped:
         return None, "file is empty", truncated
-    loads = _loads_prefix if truncated else json.loads
+    if truncated:
+        return _read_json_prefix(text, jsonc=jsonc)
     try:
-        return loads(text), None, truncated
+        return json.loads(text), None, False
     except ValueError as exc:
         if not jsonc:
-            return None, "invalid JSON: %s" % exc, truncated
+            return None, "invalid JSON: %s" % exc, False
     try:
-        return loads(strip_jsonc(text, cut_short=truncated)), None, truncated
+        return json.loads(strip_jsonc(text)), None, False
     except ValueError as exc:
-        return (
-            None,
-            "invalid JSON, even allowing comments and trailing commas: %s" % exc,
-            truncated,
-        )
+        return None, "%s: %s" % (_JSONC_INVALID, exc), False
+
+
+def _read_json_prefix(
+    text: str, *, jsonc: bool
+) -> Tuple[Optional[Any], Optional[str], bool]:
+    """Parse the first MAX_FILE_BYTES of a larger JSON file.
+
+    The prefix keeps whatever parses before the cut, so it must see the text the client
+    parses: a quote inside a comment would otherwise end it early, still valid. Comments
+    and trailing commas are stripped first for JSONC and rejected for strict JSON.
+    """
+    bare = strip_jsonc(text, cut_short=True)
+    if bare != text and not jsonc:
+        return None, "invalid JSON: comments or trailing commas", True
+    try:
+        return _loads_prefix(bare), None, True
+    except ValueError as exc:
+        return None, "%s: %s" % (_JSONC_INVALID if jsonc else "invalid JSON", exc), True
 
 
 def _loads_prefix(text: str) -> Any:

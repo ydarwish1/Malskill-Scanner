@@ -54,6 +54,13 @@ REMOTE_CODE_JSONC_OPEN = b"""{
   },
 """
 
+# Quotes and brackets inside comments before the server: a parser that pairs quotes
+# without knowing about comments loses every server after them.
+COMMENTS_WITH_QUOTES = {
+    "line-comment": b'// a " quote, a { brace and a [ bracket\n',
+    "block-comment": b'/* a " quote, a { brace and a [ bracket */\n',
+}
+
 REMOTE_CODE_HOOK = json.dumps(
     {
         "hooks": {
@@ -175,6 +182,20 @@ class OversizedJsonTests(OversizedConfigTestCase):
                 _write(path, data)
                 self.assert_flagged_and_listed(self.scan(), path)
 
+    def test_quote_in_a_comment_before_the_server(self) -> None:
+        path = os.path.join(self.home, ".claude.json")
+        for comment_name, comment in COMMENTS_WITH_QUOTES.items():
+            body = b"{\n" + comment + REMOTE_CODE_JSON[1:]
+            layouts = {
+                "after-the-object": _json_paddings(body),
+                "inside-the-object": _json_paddings(body[:-1], b"}"),
+            }
+            for layout, paddings in layouts.items():
+                for name, data in paddings.items():
+                    with self.subTest(comment=comment_name, layout=layout, padding=name):
+                        _write(path, data)
+                        self.assert_flagged_and_listed(self.scan(), path)
+
     def test_deep_nesting_past_the_cap_is_listed_not_crashed(self) -> None:
         path = os.path.join(self.home, ".claude.json")
         cases = {
@@ -226,6 +247,19 @@ class OversizedJsonTests(OversizedConfigTestCase):
             _json_paddings(REMOTE_CODE_HOOK)["spaces"],
         )
         self.assert_flagged_and_listed(self.scan(), path, "HOOK_REMOTE_CODE")
+
+    def test_settings_with_a_comment_stays_invalid_past_the_cap(self) -> None:
+        path = os.path.join(self.home, ".claude", "settings.json")
+        for comment_name, comment in COMMENTS_WITH_QUOTES.items():
+            with self.subTest(comment=comment_name):
+                body = b"{\n" + comment + REMOTE_CODE_HOOK[1:]
+                _write(path, _json_paddings(body)["spaces"])
+                report = self.scan()
+                rows = self.rows_for(report, path)
+                self.assertEqual(["too-large", "parse-error"], [row["reason"] for row in rows])
+                self.assertIn("comments or trailing commas", rows[1]["detail"])
+                self.assertEqual("NOT-FULLY-ANALYZED", harness.overall_status(report))
+                self.assertEqual(0, report["exit"])
 
     def test_config_in_a_bundle_padded_past_the_cap(self) -> None:
         bundle = os.path.join(self.root, "notes")
